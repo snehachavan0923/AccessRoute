@@ -1,0 +1,160 @@
+:root {
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  width: min(100% - 32px, 1200px);
+  margin: 0 auto;
+  padding: 24px 0;
+}
+
+.app h1 {
+  margin: 0 0 16px;
+}
+
+.app p {
+  margin: 12px 0 0;
+}
+
+.location-controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.location-controls fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.location-controls legend {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.selection-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.selection-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reset-button {
+  padding: 8px 12px;
+  border: 1px solid #98a2b3;
+  border-radius: 6px;
+  background: #fff;
+  color: #344054;
+  font: inherit;
+  cursor: pointer;
+}
+
+.reset-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.route-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.route-button {
+  padding: 10px 14px;
+  border: 1px solid #175cd3;
+  border-radius: 6px;
+  background: #175cd3;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.route-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.route-error,
+.route-distance {
+  margin: 0;
+}
+
+.route-error {
+  color: #b42318;
+}
+
+.map-instructions {
+  margin: 10px 0;
+}
+
+.selected-locations {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.location-coordinates {
+  padding: 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+}
+
+.location-coordinates h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+.location-coordinates dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.location-coordinates dt {
+  color: #475467;
+  font-size: 0.875rem;
+}
+
+.location-coordinates dd {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 520px) {
+  .location-controls {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .selected-locations {
+    grid-template-columns: 1fr;
+  }
+}

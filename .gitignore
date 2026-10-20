@@ -1,0 +1,35 @@
+
+# Python virtual environment
+.venv/
+
+# Node.js dependencies
+node_modules/
+
+# Build outputs
+dist/
+frontend/dist/
+build/
+
+# OSMnx downloaded response cache
+/cache/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS generated files
+.DS_Store
+
+# Logs
+*.log
