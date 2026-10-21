@@ -1,15 +1,18 @@
 .map-wrapper {
   position: relative;
   width: 100%;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .route-map {
   width: 100%;
+  max-width: 100%;
   height: clamp(380px, 58vh, 680px);
 }
 
 @media (max-width: 1023px) {
   .route-map {
-    height: clamp(280px, 46vh, 440px);
+    height: clamp(260px, 44vh, 420px);
   }
 }

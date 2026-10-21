@@ -487,8 +487,8 @@ export default function MapView({
       </MapContainer>
 
       {/* Floating Status Pill (Top-Left) */}
-      <div className="absolute top-3 left-3 z-[1000] pointer-events-none">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur-md">
+      <div className="absolute top-2.5 left-2.5 z-[1000] pointer-events-none max-w-[calc(100%-140px)] sm:max-w-xs">
+        <div className="pointer-events-auto flex items-center gap-1.5 sm:gap-2 rounded-full border border-slate-200/90 bg-white/95 px-2.5 py-1 sm:px-3 sm:py-1.5 text-[11px] sm:text-xs font-semibold text-slate-800 shadow-sm backdrop-blur-md min-w-0">
           <span className={`h-2 w-2 rounded-full shrink-0 ${
             statusInfo.variant === 'comparison'
               ? 'bg-emerald-500 ring-2 ring-emerald-200'
@@ -502,55 +502,56 @@ export default function MapView({
               ? 'bg-rose-500 ring-2 ring-rose-200'
               : 'bg-slate-400'
           }`} />
-          <span className="truncate max-w-[240px] sm:max-w-xs">{statusInfo.text}</span>
+          <span className="truncate">{statusInfo.text}</span>
         </div>
       </div>
 
       {/* Floating Legend & Controls (Top-Right) */}
-      <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-2 pointer-events-none">
+      <div className="absolute top-2.5 right-2.5 z-[1000] flex flex-col items-end gap-1.5 pointer-events-none">
         {/* Go to Electronic City action button */}
         {onGoToElectronicCity && (
           <button
             type="button"
             onClick={onGoToElectronicCity}
-            className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm backdrop-blur-md hover:bg-slate-50 transition-colors"
+            className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2 py-0.5 sm:px-2.5 sm:py-1 text-[11px] sm:text-xs font-medium text-slate-700 shadow-sm backdrop-blur-md hover:bg-slate-50 transition-colors"
             title="Focus map on Electronic City dataset area"
           >
-            <Compass className="h-3.5 w-3.5 text-blue-600" />
-            <span>Go to Electronic City</span>
+            <Compass className="h-3 w-3 sm:h-3.5 sm:w-3.5 text-blue-600 shrink-0" />
+            <span className="hidden sm:inline">Go to Electronic City</span>
+            <span className="sm:hidden">Focus</span>
           </button>
         )}
 
         {/* Legend */}
-        <div className="pointer-events-auto flex flex-col gap-1.5 rounded-xl border border-slate-200/90 bg-white/95 p-2.5 text-[11px] text-slate-700 shadow-sm backdrop-blur-md">
-          <div className="flex items-center gap-2">
-            <span className="h-1 w-4 rounded-sm bg-blue-600 shrink-0" />
+        <div className="pointer-events-auto flex flex-col gap-1 sm:gap-1.5 rounded-xl border border-slate-200/90 bg-white/95 p-2 sm:p-2.5 text-[10px] sm:text-[11px] text-slate-700 shadow-sm backdrop-blur-md">
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <span className="h-1 w-3 sm:w-4 rounded-sm bg-blue-600 shrink-0" />
             <span>Shortest path</span>
           </div>
           {isAlternativeFound && (
-            <div className="flex items-center gap-2">
-              <span className="h-0 w-4 border-t-2 border-dashed border-emerald-600 shrink-0" />
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="h-0 w-3 sm:w-4 border-t-2 border-dashed border-emerald-600 shrink-0" />
               <span>Traffic detour</span>
             </div>
           )}
           {comparison && !isAlternativeFound && (
-            <div className="flex items-center gap-2">
-              <span className="h-1 w-4 rounded-sm bg-slate-400 shrink-0" />
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="h-1 w-3 sm:w-4 rounded-sm bg-slate-400 shrink-0" />
               <span className="text-slate-500">Identical path</span>
             </div>
           )}
           {ecRectBounds && (
-            <div className="flex items-center gap-2">
-              <span className="h-2.5 w-3.5 rounded-xs border border-dashed border-amber-600 bg-amber-100/60 shrink-0" />
-              <span className="text-slate-600">Electronic City area</span>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="h-2 w-3 sm:h-2.5 sm:w-3.5 rounded-xs border border-dashed border-amber-600 bg-amber-100/60 shrink-0" />
+              <span className="text-slate-600">Electronic City</span>
             </div>
           )}
         </div>
 
-        {/* Map-click prompt badge */}
-        <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur-md">
+        {/* Map-click prompt badge (Visible on larger screens) */}
+        <div className="pointer-events-auto hidden sm:flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur-md">
           <MapPin className="h-3 w-3 text-slate-400" />
-          <span>Click map to set:</span>
+          <span>Click map:</span>
           <span className={`font-semibold ${selectionTarget === 'origin' ? 'text-emerald-700' : 'text-rose-700'}`}>
             {selectionTarget === 'origin' ? 'Origin (A)' : 'Destination (B)'}
           </span>

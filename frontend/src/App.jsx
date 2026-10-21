@@ -5,6 +5,7 @@ import {
   Compass,
   ArrowRight,
   SlidersHorizontal,
+  Loader2,
 } from 'lucide-react'
 import PlanningControls from './components/PlanningControls'
 import MobileDrawer from './components/MobileDrawer'
@@ -404,7 +405,7 @@ export default function App() {
       </header>
 
       {/* Main Responsive Layout */}
-      <main className="flex-1 mx-auto w-full max-w-7xl p-3 sm:p-5 lg:p-6">
+      <main className="flex-1 mx-auto w-full max-w-7xl p-3 sm:p-5 lg:p-6 min-w-0 overflow-x-hidden">
         {/* Desktop Layout: 2 Columns */}
         <div className="hidden lg:grid lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
           {/* Left Column: Planning Controls */}
@@ -413,7 +414,7 @@ export default function App() {
           </aside>
 
           {/* Right Column: Map & Route Results */}
-          <section className="space-y-4" aria-label="Route Map and Analysis">
+          <section className="space-y-4 min-w-0" aria-label="Route Map and Analysis">
             <MapView
               origin={origin}
               destination={destination}
@@ -434,44 +435,84 @@ export default function App() {
         </div>
 
         {/* Mobile / Tablet Map-First Layout (< lg) */}
-        <div className="lg:hidden space-y-3">
+        <div className="lg:hidden space-y-3.5 max-w-full min-w-0">
           {/* Map is at the TOP on mobile */}
-          <MapView
-            origin={origin}
-            destination={destination}
-            route={route}
-            comparison={comparison}
-            electronicCityBounds={trafficInfo?.bounds}
-            manualCameraAction={manualCameraAction}
-            onLocationSelect={handleLocationSelectFromMap}
-            selectionTarget={selectionTarget}
-            onGoToElectronicCity={handleGoToElectronicCity}
-            onMapReady={(map) => {
-              mapInstanceRef.current = map
-            }}
-          />
+          <div className="max-w-full min-w-0 overflow-hidden rounded-2xl">
+            <MapView
+              origin={origin}
+              destination={destination}
+              route={route}
+              comparison={comparison}
+              electronicCityBounds={trafficInfo?.bounds}
+              manualCameraAction={manualCameraAction}
+              onLocationSelect={handleLocationSelectFromMap}
+              selectionTarget={selectionTarget}
+              onGoToElectronicCity={handleGoToElectronicCity}
+              onMapReady={(map) => {
+                mapInstanceRef.current = map
+              }}
+            />
+          </div>
 
-          {/* Compact Mobile Quick Action Bar */}
-          <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2.5 shadow-xs">
-            <button
-              type="button"
+          {/* Mobile Endpoints Summary & Action Bar */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs space-y-2.5 max-w-full min-w-0">
+            {/* Header: ENDPOINTS label and Change / Search shortcut */}
+            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5 min-w-0">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                Endpoints
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsMobileDrawerOpen(true)
+                  invalidateMap()
+                }}
+                className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700 active:underline"
+              >
+                <span>Edit / Search</span>
+                <SlidersHorizontal className="h-3 w-3" />
+              </button>
+            </div>
+
+            {/* Endpoints display: Origin -> Destination clearly stacked & wrapping */}
+            <div
               onClick={() => {
                 setIsMobileDrawerOpen(true)
                 invalidateMap()
               }}
-              className="flex-1 flex items-center gap-2 text-left px-2 py-1 rounded-lg hover:bg-slate-50 transition-colors"
+              className="cursor-pointer rounded-lg bg-slate-50/80 p-2.5 transition-colors hover:bg-slate-100/80 active:bg-slate-100 max-w-full min-w-0"
+              title="Tap to change route endpoints"
             >
-              <div className="flex flex-col min-w-0">
-                <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-                  Endpoints
-                </span>
-                <span className="text-xs font-semibold text-slate-800 truncate">
-                  {origin ? origin.label : 'Select starting point (A)'} ➜{' '}
-                  {destination ? destination.label : 'Select destination (B)'}
-                </span>
-              </div>
-            </button>
+              <div className="flex flex-col gap-1.5 text-xs min-w-0">
+                {/* Origin */}
+                <div className="flex items-start gap-2 min-w-0">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white mt-0.5">
+                    A
+                  </span>
+                  <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
+                    {origin ? origin.label : 'Select starting location (A)'}
+                  </span>
+                </div>
 
+                {/* Connecting arrow */}
+                <div className="flex items-center gap-2 pl-1 text-slate-400">
+                  <div className="h-2 w-0.5 bg-slate-300 ml-1 rounded-full" />
+                  <ArrowRight className="h-3 w-3 -ml-0.5 rotate-90 sm:rotate-0 text-slate-400" />
+                </div>
+
+                {/* Destination */}
+                <div className="flex items-start gap-2 min-w-0">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold text-white mt-0.5">
+                    B
+                  </span>
+                  <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
+                    {destination ? destination.label : 'Select destination (B)'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Compare Routes Button - full width on mobile, comfortable touch target, completely visible */}
             <button
               type="button"
               onClick={() => {
@@ -482,17 +523,28 @@ export default function App() {
                   invalidateMap()
                 }
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 active:scale-[0.98] shrink-0"
+              disabled={isCalculating}
+              className="flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all cursor-pointer"
             >
-              {origin && destination ? (
+              {isCalculating && calculatingMode === 'compare' ? (
                 <>
-                  <span>Compare</span>
-                  <ArrowRight className="h-3.5 w-3.5" />
+                  <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
+                  <span>Finding & comparing routes…</span>
+                </>
+              ) : isCalculating && calculatingMode === 'shortest' ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
+                  <span>Calculating shortest route…</span>
+                </>
+              ) : origin && destination ? (
+                <>
+                  <span>Find and compare routes</span>
+                  <ArrowRight className="h-3.5 w-3.5 shrink-0" />
                 </>
               ) : (
                 <>
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                  <span>Plan</span>
+                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                  <span>Set locations to compare</span>
                 </>
               )}
             </button>
