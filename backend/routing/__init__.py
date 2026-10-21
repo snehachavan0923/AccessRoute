@@ -5,6 +5,10 @@ from .contracts import (
     RouteComparisonService,
     ShortestRoute,
 )
+from .traffic_aware_path import (
+    TrafficAwarePathService,
+    TrafficRouteComparisonService,
+)
 
 __all__ = [
     "Coordinate",
@@ -12,4 +16,7 @@ __all__ = [
     "RouteComparison",
     "RouteComparisonService",
     "ShortestRoute",
+    "TrafficAwarePathService",
+    "TrafficRouteComparisonService",
 ]
+

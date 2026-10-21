@@ -33,3 +33,11 @@ __pycache__/
 
 # Logs
 *.log
+
+# Traffic dataset files (external simulated data)
+*.npy
+*.graphml
+/data/
+traffic_data/
+electronic-city-traffic-clean/
+
