@@ -9,6 +9,7 @@ import {
   useMap,
   useMapEvents,
 } from 'react-leaflet'
+import { Compass, MapPin } from 'lucide-react'
 import { DEFAULT_MAP_CENTER } from './mapConfig'
 import './MapView.css'
 
@@ -31,11 +32,18 @@ function MapController({
   route,
   comparison,
   manualCameraAction,
+  onMapReady,
 }) {
   const map = useMap()
   const lastTargetKeyRef = useRef(null)
 
-  // Invalidate map size on mount, resize, or layout changes (e.g. results card toggle)
+  useEffect(() => {
+    if (onMapReady) {
+      onMapReady(map)
+    }
+  }, [map, onMapReady])
+
+  // Invalidate map size on layout changes or window resizes
   useEffect(() => {
     const container = map.getContainer()
     if (!container) return
@@ -52,14 +60,14 @@ function MapController({
   }, [map, route, comparison])
 
   useEffect(() => {
-    // 1. Manual Camera Override (e.g. clicking "Go to Electronic City")
+    // 1. Manual Camera Action (e.g. "Go to Electronic City")
     if (manualCameraAction?.bounds) {
       const key = `manual:${manualCameraAction.id || JSON.stringify(manualCameraAction.bounds)}`
       if (lastTargetKeyRef.current !== key) {
         lastTargetKeyRef.current = key
         try {
           map.fitBounds(manualCameraAction.bounds, {
-            padding: [45, 45],
+            padding: [40, 40],
             maxZoom: 16,
             animate: true,
             duration: 0.8,
@@ -71,7 +79,7 @@ function MapController({
       return
     }
 
-    // 2. Comparison Result (fits both shortest and traffic routes + endpoints)
+    // 2. Comparison Result (fits both route geometries & endpoints)
     if (comparison) {
       const allCoords = [
         ...(comparison.shortest_distance?.coordinates || []),
@@ -150,7 +158,7 @@ function MapController({
       return
     }
 
-    // 4. Both Origin and Destination selected (or updated via search, click, or preset)
+    // 4. Both Origin and Destination selected
     if (origin && destination) {
       const origLat = Number(origin.latitude)
       const origLon = Number(origin.longitude)
@@ -232,7 +240,7 @@ function MapController({
       return
     }
 
-    // 7. Neither location selected (Reset)
+    // 7. Neither location selected
     if (!origin && !destination && !route && !comparison) {
       lastTargetKeyRef.current = null
     }
@@ -242,9 +250,7 @@ function MapController({
 }
 
 function MapLocationMarker({ label, location, color, badgeText }) {
-  if (!location) {
-    return null
-  }
+  if (!location) return null
 
   return (
     <CircleMarker
@@ -312,21 +318,21 @@ function getMapStatus(origin, destination, route, comparison) {
   if (origin && destination) {
     return {
       variant: 'both',
-      text: 'Showing both selected locations',
+      text: 'Both endpoints selected',
     }
   }
 
   if (origin && !destination) {
     return {
       variant: 'origin',
-      text: `Focused on Starting Location: ${origin.label || 'Point A'}`,
+      text: `Starting point: ${origin.label || 'Point A'}`,
     }
   }
 
   if (!origin && destination) {
     return {
       variant: 'destination',
-      text: `Focused on Destination: ${destination.label || 'Point B'}`,
+      text: `Destination: ${destination.label || 'Point B'}`,
     }
   }
 
@@ -336,7 +342,7 @@ function getMapStatus(origin, destination, route, comparison) {
   }
 }
 
-function MapView({
+export default function MapView({
   origin,
   destination,
   route,
@@ -345,6 +351,8 @@ function MapView({
   manualCameraAction,
   onLocationSelect,
   selectionTarget,
+  onGoToElectronicCity,
+  onMapReady,
 }) {
   const shortestCoords = comparison?.shortest_distance?.coordinates?.map(
     ({ latitude, longitude }) => [latitude, longitude],
@@ -354,7 +362,6 @@ function MapView({
       ({ latitude, longitude }) => [latitude, longitude],
     )
 
-  // Derive leaflet bounds for Electronic City rectangle if provided
   const ecRectBounds = electronicCityBounds
     ? [
         [electronicCityBounds.min_lat, electronicCityBounds.min_lon],
@@ -366,7 +373,7 @@ function MapView({
   const isAlternativeFound = comparison?.status === 'alternative_found'
 
   return (
-    <div className="map-wrapper">
+    <div className="map-wrapper relative w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 shadow-xs">
       <MapContainer
         className="route-map"
         center={DEFAULT_MAP_CENTER}
@@ -374,7 +381,7 @@ function MapView({
         scrollWheelZoom
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
@@ -384,6 +391,7 @@ function MapView({
           route={route}
           comparison={comparison}
           manualCameraAction={manualCameraAction}
+          onMapReady={onMapReady}
         />
         <LocationSelector onSelect={onLocationSelect} />
 
@@ -410,7 +418,7 @@ function MapView({
             pathOptions={{
               color: '#2563EB',
               weight: 6,
-              opacity: 0.85,
+              opacity: 0.9,
             }}
           />
         )}
@@ -428,18 +436,18 @@ function MapView({
           />
         )}
 
-        {/* Single shortest route fallback when calculate shortest only was used */}
+        {/* Single shortest route fallback */}
         {!comparison && route && (
           <Polyline
             positions={route.coordinates.map(({ latitude, longitude }) => [
               latitude,
               longitude,
             ])}
-            pathOptions={{ color: '#2563EB', weight: 6, opacity: 0.85 }}
+            pathOptions={{ color: '#2563EB', weight: 6, opacity: 0.9 }}
           />
         )}
 
-        {/* Snapped endpoints indicators if available */}
+        {/* Snapped endpoints indicators */}
         {comparison?.snapped_origin && (
           <CircleMarker
             center={[
@@ -447,7 +455,7 @@ function MapView({
               comparison.snapped_origin.longitude,
             ]}
             radius={4}
-            pathOptions={{ color: '#16a34a', fillColor: '#16a34a', fillOpacity: 0.7 }}
+            pathOptions={{ color: '#16a34a', fillColor: '#16a34a', fillOpacity: 0.8 }}
           />
         )}
         {comparison?.snapped_destination && (
@@ -457,11 +465,11 @@ function MapView({
               comparison.snapped_destination.longitude,
             ]}
             radius={4}
-            pathOptions={{ color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.7 }}
+            pathOptions={{ color: '#dc2626', fillColor: '#dc2626', fillOpacity: 0.8 }}
           />
         )}
 
-        {/* Origin Marker */}
+        {/* Origin Marker (Green) */}
         <MapLocationMarker
           badgeText="A"
           label={origin?.label || 'Origin'}
@@ -469,7 +477,7 @@ function MapView({
           color="#16a34a"
         />
 
-        {/* Destination Marker */}
+        {/* Destination Marker (Red) */}
         <MapLocationMarker
           badgeText="B"
           label={destination?.label || 'Destination'}
@@ -478,57 +486,76 @@ function MapView({
         />
       </MapContainer>
 
-      {/* Floating Unobtrusive Map Status Message */}
-      <div className="map-status-overlay" aria-live="polite">
-        <div className="map-status-chip">
-          <span className={`map-status-dot dot-${statusInfo.variant}`} />
-          <span className="map-status-text">{statusInfo.text}</span>
+      {/* Floating Status Pill (Top-Left) */}
+      <div className="absolute top-3 left-3 z-[1000] pointer-events-none">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-slate-200/90 bg-white/95 px-3 py-1.5 text-xs font-semibold text-slate-800 shadow-sm backdrop-blur-md">
+          <span className={`h-2 w-2 rounded-full shrink-0 ${
+            statusInfo.variant === 'comparison'
+              ? 'bg-emerald-500 ring-2 ring-emerald-200'
+              : statusInfo.variant === 'route' || statusInfo.variant === 'identical'
+              ? 'bg-blue-500 ring-2 ring-blue-200'
+              : statusInfo.variant === 'fallback'
+              ? 'bg-amber-500 ring-2 ring-amber-200'
+              : statusInfo.variant === 'origin'
+              ? 'bg-emerald-500 ring-2 ring-emerald-200'
+              : statusInfo.variant === 'destination'
+              ? 'bg-rose-500 ring-2 ring-rose-200'
+              : 'bg-slate-400'
+          }`} />
+          <span className="truncate max-w-[240px] sm:max-w-xs">{statusInfo.text}</span>
         </div>
       </div>
 
-      {/* Floating Map Legend & Selection Target Prompt */}
-      <div className="map-floating-overlay" aria-label="Route map legend">
-        <div className="map-legend-card">
-          <div className="legend-row">
-            <span className="legend-swatch shortest-swatch" />
-            <span className="legend-text">
-              <strong>Shortest</strong> walking path
-            </span>
+      {/* Floating Legend & Controls (Top-Right) */}
+      <div className="absolute top-3 right-3 z-[1000] flex flex-col items-end gap-2 pointer-events-none">
+        {/* Go to Electronic City action button */}
+        {onGoToElectronicCity && (
+          <button
+            type="button"
+            onClick={onGoToElectronicCity}
+            className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1 text-xs font-medium text-slate-700 shadow-sm backdrop-blur-md hover:bg-slate-50 transition-colors"
+            title="Focus map on Electronic City dataset area"
+          >
+            <Compass className="h-3.5 w-3.5 text-blue-600" />
+            <span>Go to Electronic City</span>
+          </button>
+        )}
+
+        {/* Legend */}
+        <div className="pointer-events-auto flex flex-col gap-1.5 rounded-xl border border-slate-200/90 bg-white/95 p-2.5 text-[11px] text-slate-700 shadow-sm backdrop-blur-md">
+          <div className="flex items-center gap-2">
+            <span className="h-1 w-4 rounded-sm bg-blue-600 shrink-0" />
+            <span>Shortest path</span>
           </div>
-
-          {isAlternativeFound ? (
-            <div className="legend-row">
-              <span className="legend-swatch traffic-swatch" />
-              <span className="legend-text">
-                <strong>Traffic-aware</strong> detour
-              </span>
+          {isAlternativeFound && (
+            <div className="flex items-center gap-2">
+              <span className="h-0 w-4 border-t-2 border-dashed border-emerald-600 shrink-0" />
+              <span>Traffic detour</span>
             </div>
-          ) : comparison ? (
-            <div className="legend-row">
-              <span className="legend-swatch identical-swatch" />
-              <span className="legend-text">
-                Traffic route: <em>Identical fallback</em>
-              </span>
+          )}
+          {comparison && !isAlternativeFound && (
+            <div className="flex items-center gap-2">
+              <span className="h-1 w-4 rounded-sm bg-slate-400 shrink-0" />
+              <span className="text-slate-500">Identical path</span>
             </div>
-          ) : null}
-
+          )}
           {ecRectBounds && (
-            <div className="legend-row">
-              <span className="legend-swatch ec-swatch" />
-              <span className="legend-text">Electronic City dataset zone</span>
+            <div className="flex items-center gap-2">
+              <span className="h-2.5 w-3.5 rounded-xs border border-dashed border-amber-600 bg-amber-100/60 shrink-0" />
+              <span className="text-slate-600">Electronic City area</span>
             </div>
           )}
         </div>
 
-        <div className="map-prompt-badge">
-          <span>Click map to set: </span>
-          <strong className={selectionTarget}>
-            {selectionTarget === 'origin' ? 'Starting Location (A)' : 'Destination (B)'}
-          </strong>
+        {/* Map-click prompt badge */}
+        <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-200/90 bg-white/95 px-2.5 py-1 text-[11px] font-medium text-slate-700 shadow-sm backdrop-blur-md">
+          <MapPin className="h-3 w-3 text-slate-400" />
+          <span>Click map to set:</span>
+          <span className={`font-semibold ${selectionTarget === 'origin' ? 'text-emerald-700' : 'text-rose-700'}`}>
+            {selectionTarget === 'origin' ? 'Origin (A)' : 'Destination (B)'}
+          </span>
         </div>
       </div>
     </div>
   )
 }
-
-export default MapView
