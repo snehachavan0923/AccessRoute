@@ -16,7 +16,7 @@ export default function LocationInput({
   const [prevValue, setPrevValue] = useState(value)
   const [query, setQuery] = useState(
     value?.label ||
-      (value ? `${value.latitude.toFixed(5)}, ${value.longitude.toFixed(5)}` : ''),
+    (value ? `${value.latitude.toFixed(5)}, ${value.longitude.toFixed(5)}` : ''),
   )
   const [suggestions, setSuggestions] = useState([])
   const [isOpen, setIsOpen] = useState(false)
@@ -33,7 +33,7 @@ export default function LocationInput({
     setPrevValue(value)
     setQuery(
       value?.label ||
-        (value ? `${value.latitude.toFixed(5)}, ${value.longitude.toFixed(5)}` : ''),
+      (value ? `${value.latitude.toFixed(5)}, ${value.longitude.toFixed(5)}` : ''),
     )
     setSuggestions([])
     setIsOpen(false)
@@ -166,11 +166,10 @@ export default function LocationInput({
 
   return (
     <div
-      className={`relative rounded-xl border p-3 transition-colors ${
-        isActiveTarget
+      className={`relative rounded-xl border p-3 transition-colors ${isActiveTarget
           ? 'border-blue-400 bg-blue-50/40 ring-1 ring-blue-300'
           : 'border-slate-200 bg-white hover:border-slate-300'
-      }`}
+        }`}
       ref={containerRef}
     >
       {/* Label and Map-select trigger */}
@@ -182,11 +181,10 @@ export default function LocationInput({
         <button
           type="button"
           onClick={onActivateTarget}
-          className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-all ${
-            isActiveTarget
+          className={`flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition-all ${isActiveTarget
               ? 'bg-blue-600 text-white shadow-xs'
               : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-          }`}
+            }`}
           title="Click on the map to place this point"
         >
           <MapPin className="h-3 w-3" />
