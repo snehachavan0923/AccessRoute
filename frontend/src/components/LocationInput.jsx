@@ -52,6 +52,23 @@ export default function LocationInput({
       return
     }
 
+    // Check if user entered direct coordinates (e.g. 12.8385, 77.6658)
+    const coordMatch = query.match(/^\s*(-?\d+(?:\.\d+)?)[,\s]+(-?\d+(?:\.\d+)?)\s*$/)
+    let directCoord = null
+    if (coordMatch) {
+      const lat = parseFloat(coordMatch[1])
+      const lon = parseFloat(coordMatch[2])
+      if (lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+        directCoord = {
+          label: `Coordinates (${lat.toFixed(5)}, ${lon.toFixed(5)})`,
+          address: 'Custom coordinate point',
+          latitude: lat,
+          longitude: lon,
+          source: 'verified_landmark',
+        }
+      }
+    }
+
     const timeoutId = setTimeout(async () => {
       abortControllerRef.current?.abort()
       const controller = new AbortController()
@@ -63,14 +80,20 @@ export default function LocationInput({
         const data = await searchPlaces(query, controller.signal)
         if (!controller.signal.aborted) {
           const results = data.results || []
-          setSuggestions(results)
-          setIsOpen(results.length > 0)
+          const combined = directCoord ? [directCoord, ...results] : results
+          setSuggestions(combined)
+          setIsOpen(combined.length > 0)
         }
       } catch {
         if (!controller.signal.aborted) {
-          setGeoError('Search unavailable offline')
-          setSuggestions([])
-          setIsOpen(false)
+          if (directCoord) {
+            setSuggestions([directCoord])
+            setIsOpen(true)
+          } else {
+            setGeoError('Search unavailable offline')
+            setSuggestions([])
+            setIsOpen(false)
+          }
         }
       } finally {
         if (abortControllerRef.current === controller) {

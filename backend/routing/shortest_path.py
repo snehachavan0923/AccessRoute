@@ -9,6 +9,7 @@ from backend.pedestrian_network import (
     NetworkDownloadError,
     OSMnxPedestrianNetworkProvider,
     PedestrianNetworkProvider,
+    get_default_network_provider,
 )
 from backend.routing.contracts import Coordinate, ShortestRoute
 
@@ -179,7 +180,7 @@ class ShortestPathService:
         network_provider: PedestrianNetworkProvider | None = None,
         settings: NetworkAreaSettings | None = None,
     ) -> None:
-        self._network_provider = network_provider or OSMnxPedestrianNetworkProvider()
+        self._network_provider = network_provider or get_default_network_provider()
         self._settings = settings or NetworkAreaSettings.from_environment()
 
     def calculate(

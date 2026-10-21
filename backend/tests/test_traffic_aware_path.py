@@ -428,6 +428,82 @@ class TrafficAwareRoutingTests(unittest.TestCase):
                 Coordinate(0.0, 0.0), Coordinate(0.0, 0.002), traffic_weight=-1.0
             )
 
+    def test_partial_traffic_coverage_metrics(self) -> None:
+        """Verify that when only a subset of route edges have traffic data:
+        1. matched_traffic_edges_count accurately reflects matched count
+        2. traffic_coverage_percent reflects the exact ratio
+        3. average_congestion is calculated ONLY from matched edges
+        4. unmatched edges default cost to physical length (d(e))
+        """
+        with tempfile.TemporaryDirectory() as partial_dir:
+            p_path = Path(partial_dir)
+            p_nodes = [
+                {"node_id": "0", "osm_node_id": "1", "x": "0.0", "y": "0.0"},
+                {"node_id": "1", "osm_node_id": "2", "x": "0.001", "y": "0.0"},
+            ]
+            # Only edge 1 -> 2 exists in dataset (2 -> 3 is missing)
+            p_edges = [
+                {
+                    "edge_id": "0",
+                    "u": "0",
+                    "v": "1",
+                    "osm_u": "1",
+                    "osm_v": "2",
+                    "key": "0",
+                    "length_m": "100.0",
+                    "highway": "primary",
+                    "maxspeed": "50",
+                },
+            ]
+            p_cong = np.array([[0.6]], dtype=np.float32)
+            p_spd = np.ones((1, 1), dtype=np.float32) * 30.0
+            p_veh = np.ones((1, 1), dtype=np.float32) * 10.0
+
+            create_synthetic_dataset(
+                p_path,
+                timestamps=["2026-01-01 00:00:00"],
+                nodes=p_nodes,
+                edges=p_edges,
+                congestion_matrix=p_cong,
+                speed_matrix=p_spd,
+                vehicle_matrix=p_veh,
+            )
+            partial_dataset = TrafficDataset.load(p_path)
+
+            # Direct line graph: 1 -> 2 (100m) -> 3 (100m)
+            line_graph = nx.MultiDiGraph(crs="epsg:4326")
+            line_graph.add_node(1, x=0.0, y=0.0)
+            line_graph.add_node(2, x=0.001, y=0.0)
+            line_graph.add_node(3, x=0.002, y=0.0)
+            line_graph.add_edge(1, 2, key=0, length=100.0)
+            line_graph.add_edge(2, 3, key=0, length=100.0)
+
+            provider = Mock()
+            provider.load.return_value = line_graph
+
+            service = TrafficRouteComparisonService(
+                network_provider=provider,
+                traffic_dataset=partial_dataset,
+            )
+
+            comparison = service.compare(
+                Coordinate(0.0, 0.0),
+                Coordinate(0.0, 0.002),
+                time_index=0,
+                traffic_weight=2.0,
+            )
+
+            shortest = comparison.shortest_distance
+            # 2 edges total, exactly 1 matched
+            self.assertEqual(shortest.edges_count, 2)
+            self.assertEqual(shortest.matched_traffic_edges_count, 1)
+            self.assertAlmostEqual(shortest.traffic_coverage_percent, 50.0)
+            # Average congestion is 0.6 (from the 1 matched edge, not diluted by 0.0)
+            self.assertAlmostEqual(shortest.average_congestion, 0.6, places=4)
+            # Cost = edge1_cost (100 * (1 + 2*0.6) = 220) + edge2_cost (100 * (1 + 0) = 100) = 320.0
+            self.assertAlmostEqual(shortest.cost, 320.0, places=4)
+            self.assertAlmostEqual(shortest.distance_meters, 200.0, places=4)
+
 
 class RouteComparisonEndpointTests(unittest.TestCase):
     def setUp(self) -> None:

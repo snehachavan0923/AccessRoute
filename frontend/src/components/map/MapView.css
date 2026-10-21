@@ -13,6 +13,83 @@
   height: clamp(380px, 58vh, 680px);
 }
 
+/* Unobtrusive Map Status Message (Top-Left) */
+.map-status-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 1000;
+  pointer-events: none;
+}
+
+.map-status-chip {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid #d0d5dd;
+  border-radius: 9999px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #1e293b;
+  max-width: min(440px, calc(100vw - 120px));
+}
+
+.map-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #64748b;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(100, 116, 139, 0.2);
+}
+
+.map-status-dot.dot-origin {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.25);
+}
+
+.map-status-dot.dot-destination {
+  background: #dc2626;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25);
+}
+
+.map-status-dot.dot-both {
+  background: #0284c7;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.25);
+}
+
+.map-status-dot.dot-route {
+  background: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.map-status-dot.dot-comparison {
+  background: #16a34a;
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.25);
+}
+
+.map-status-dot.dot-identical {
+  background: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.25);
+}
+
+.map-status-dot.dot-fallback {
+  background: #d97706;
+  box-shadow: 0 0 0 2px rgba(217, 119, 6, 0.25);
+}
+
+/* Floating Map Legend & Prompt (Top-Right) */
 .map-floating-overlay {
   position: absolute;
   top: 12px;
@@ -69,6 +146,11 @@
   height: 0;
 }
 
+.legend-swatch.identical-swatch {
+  background: #94a3b8;
+  height: 4px;
+}
+
 .legend-swatch.ec-swatch {
   border: 1px dashed #d97706;
   background: rgba(254, 243, 199, 0.5);
@@ -94,6 +176,19 @@
 @media (max-width: 640px) {
   .route-map {
     height: 340px;
+  }
+
+  .map-status-overlay {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+  }
+
+  .map-status-chip {
+    width: 100%;
+    max-width: 100%;
+    font-size: 0.75rem;
+    padding: 5px 10px;
   }
 
   .map-floating-overlay {

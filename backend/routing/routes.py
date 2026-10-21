@@ -16,8 +16,8 @@ comparison_service = TrafficRouteComparisonService()
 
 
 class CoordinateRequest(BaseModel):
-    latitude: float = Field(ge=-90, le=90, strict=True)
-    longitude: float = Field(ge=-180, le=180, strict=True)
+    latitude: float = Field(ge=-90.0, le=90.0)
+    longitude: float = Field(ge=-180.0, le=180.0)
 
 
 class ShortestRouteRequest(BaseModel):
@@ -30,7 +30,7 @@ class CompareRoutesRequest(BaseModel):
     destination: CoordinateRequest
     timestamp: str | None = None
     time_index: int | None = None
-    traffic_weight: float = Field(default=2.0, ge=0.0, le=10.0)
+    traffic_weight: float = Field(default=2.0, ge=0.0, le=50.0)
 
 
 class CoordinateResponse(BaseModel):

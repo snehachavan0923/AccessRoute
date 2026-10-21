@@ -70,7 +70,7 @@ export default function App() {
   const [isCalculating, setIsCalculating] = useState(false)
   const [calculatingMode, setCalculatingMode] = useState('')
   const [routeError, setRouteError] = useState('')
-  const [targetBounds, setTargetBounds] = useState(null)
+  const [manualCameraAction, setManualCameraAction] = useState(null)
 
   // Traffic settings
   const [trafficInfo, setTrafficInfo] = useState(null)
@@ -108,6 +108,7 @@ export default function App() {
     setRoute(null)
     setComparison(null)
     setRouteError('')
+    setManualCameraAction(null)
 
     const formattedLocation = {
       ...location,
@@ -130,6 +131,7 @@ export default function App() {
     setComparison(null)
     setRouteError('')
     setSelectionTarget('origin')
+    setManualCameraAction(null)
   }
 
   function handleApplyPreset(preset) {
@@ -139,33 +141,74 @@ export default function App() {
     setRoute(null)
     setComparison(null)
     setRouteError('')
-
-    // Fit map to show both preset locations
-    const minLat = Math.min(preset.origin.latitude, preset.destination.latitude)
-    const maxLat = Math.max(preset.origin.latitude, preset.destination.latitude)
-    const minLon = Math.min(preset.origin.longitude, preset.destination.longitude)
-    const maxLon = Math.max(preset.origin.longitude, preset.destination.longitude)
-    setTargetBounds([
-      [minLat, minLon],
-      [maxLat, maxLon],
-    ])
+    setManualCameraAction(null)
   }
 
   function handleGoToElectronicCity() {
-    if (trafficInfo?.bounds) {
-      setTargetBounds([
-        [trafficInfo.bounds.min_lat, trafficInfo.bounds.min_lon],
-        [trafficInfo.bounds.max_lat, trafficInfo.bounds.max_lon],
-      ])
-    } else {
-      setTargetBounds(ELECTRONIC_CITY_DEFAULT_BOUNDS)
+    const bounds = trafficInfo?.bounds
+      ? [
+          [trafficInfo.bounds.min_lat, trafficInfo.bounds.min_lon],
+          [trafficInfo.bounds.max_lat, trafficInfo.bounds.max_lon],
+        ]
+      : ELECTRONIC_CITY_DEFAULT_BOUNDS
+    setManualCameraAction({ id: Date.now(), bounds })
+  }
+
+  function validateCoordinates(orig, dest) {
+    if (!orig || !dest) {
+      return 'Please select both a starting location and a destination.'
     }
+    const origLat = Number(orig.latitude)
+    const origLon = Number(orig.longitude)
+    const destLat = Number(dest.latitude)
+    const destLon = Number(dest.longitude)
+
+    if (
+      !Number.isFinite(origLat) ||
+      !Number.isFinite(origLon) ||
+      !Number.isFinite(destLat) ||
+      !Number.isFinite(destLon) ||
+      origLat < -90 ||
+      origLat > 90 ||
+      destLat < -90 ||
+      destLat > 90 ||
+      origLon < -180 ||
+      origLon > 180 ||
+      destLon < -180 ||
+      destLon > 180
+    ) {
+      return 'Invalid coordinates selected. Please re-select origin and destination.'
+    }
+
+    const latDiff = Math.abs(origLat - destLat) * 111.32
+    const lonDiff = Math.abs(origLon - destLon) * 111.32 * Math.cos((origLat * Math.PI) / 180)
+    const approxDistKm = Math.hypot(latDiff, lonDiff)
+    if (approxDistKm > 20) {
+      return `Selected locations are approximately ${approxDistKm.toFixed(1)} km apart. Pedestrian network downloads are limited to 20 km to ensure high performance.`
+    }
+
+    return null
+  }
+
+  function formatApiError(error) {
+    const msg = error instanceof Error ? error.message : String(error)
+    if (msg.includes('503') || msg.includes('temporarily busy') || msg.includes('Overpass')) {
+      return 'OpenStreetMap routing service is temporarily at capacity. The system caches downloaded networks; please wait a moment and click "Find and compare routes" again.'
+    }
+    if (msg.includes('422') || msg.includes('too far apart')) {
+      return 'The selected locations are too far apart for a pedestrian route download (maximum 20 km diagonal).'
+    }
+    if (msg.includes('404') || msg.includes('No pedestrian path')) {
+      return 'No walkable pedestrian path connects the selected locations. Try moving pins to adjacent public roads or sidewalks.'
+    }
+    return msg || 'Unable to calculate routes. Please check connection and retry.'
   }
 
   // Primary action: Find and compare both routes in one step
   async function handleFindAndCompare() {
-    if (!origin || !destination) {
-      setRouteError('Please select both a starting location and a destination.')
+    const validationError = validateCoordinates(origin, destination)
+    if (validationError) {
+      setRouteError(validationError)
       return
     }
 
@@ -177,38 +220,22 @@ export default function App() {
     setRoute(null)
     setComparison(null)
     setRouteError('')
+    setManualCameraAction(null)
 
     try {
       const result = await compareRoutes(
-        { latitude: origin.latitude, longitude: origin.longitude },
-        { latitude: destination.latitude, longitude: destination.longitude },
+        { latitude: Number(origin.latitude), longitude: Number(origin.longitude) },
+        { latitude: Number(destination.latitude), longitude: Number(destination.longitude) },
         { timestamp: selectedTimestamp, trafficWeight },
         controller.signal,
       )
 
       if (!controller.signal.aborted) {
         setComparison(result)
-
-        // Fit map bounds to encompass both returned routes
-        const allCoords = [
-          ...(result.shortest_distance?.coordinates || []),
-          ...(result.traffic_accessibility_aware?.coordinates || []),
-        ]
-
-        if (allCoords.length > 0) {
-          const lats = allCoords.map((c) => c.latitude)
-          const lons = allCoords.map((c) => c.longitude)
-          setTargetBounds([
-            [Math.min(...lats), Math.min(...lons)],
-            [Math.max(...lats), Math.max(...lons)],
-          ])
-        }
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        setRouteError(
-          error instanceof Error ? error.message : 'Unable to calculate routes.',
-        )
+        setRouteError(formatApiError(error))
       }
     } finally {
       if (requestController.current === controller) {
@@ -221,8 +248,9 @@ export default function App() {
 
   // Secondary option: Calculate shortest route only
   async function handleCalculateShortestOnly() {
-    if (!origin || !destination) {
-      setRouteError('Please select both a starting location and a destination.')
+    const validationError = validateCoordinates(origin, destination)
+    if (validationError) {
+      setRouteError(validationError)
       return
     }
 
@@ -234,30 +262,21 @@ export default function App() {
     setRoute(null)
     setComparison(null)
     setRouteError('')
+    setManualCameraAction(null)
 
     try {
       const result = await calculateShortestRoute(
-        { latitude: origin.latitude, longitude: origin.longitude },
-        { latitude: destination.latitude, longitude: destination.longitude },
+        { latitude: Number(origin.latitude), longitude: Number(origin.longitude) },
+        { latitude: Number(destination.latitude), longitude: Number(destination.longitude) },
         controller.signal,
       )
 
       if (!controller.signal.aborted) {
         setRoute(result)
-        if (result.coordinates?.length > 0) {
-          const lats = result.coordinates.map((c) => c.latitude)
-          const lons = result.coordinates.map((c) => c.longitude)
-          setTargetBounds([
-            [Math.min(...lats), Math.min(...lons)],
-            [Math.max(...lats), Math.max(...lons)],
-          ])
-        }
       }
     } catch (error) {
       if (!controller.signal.aborted) {
-        setRouteError(
-          error instanceof Error ? error.message : 'Unable to calculate route.',
-        )
+        setRouteError(formatApiError(error))
       }
     } finally {
       if (requestController.current === controller) {
@@ -280,6 +299,12 @@ export default function App() {
     comparison?.traffic_accessibility_aware?.cost !== undefined
       ? comparison.traffic_accessibility_aware.cost - comparison.shortest_distance.cost
       : null
+
+  const hasTrafficAlternative = comparison?.status === 'alternative_found'
+  const hasMatchedTraffic =
+    (comparison?.traffic_accessibility_aware?.matched_traffic_edges_count || 0) > 0
+  const hasImpedanceReduction =
+    costDelta !== null && costDelta < -0.01 && hasTrafficAlternative && hasMatchedTraffic
 
   return (
     <div className="dashboard-container">
@@ -332,12 +357,14 @@ export default function App() {
                 clearRouteRequest()
                 setRoute(null)
                 setComparison(null)
+                setManualCameraAction(null)
                 setOrigin(loc)
               }}
               onClear={() => {
                 clearRouteRequest()
                 setRoute(null)
                 setComparison(null)
+                setManualCameraAction(null)
                 setOrigin(null)
               }}
               isActiveTarget={selectionTarget === 'origin'}
@@ -353,12 +380,14 @@ export default function App() {
                 clearRouteRequest()
                 setRoute(null)
                 setComparison(null)
+                setManualCameraAction(null)
                 setDestination(loc)
               }}
               onClear={() => {
                 clearRouteRequest()
                 setRoute(null)
                 setComparison(null)
+                setManualCameraAction(null)
                 setDestination(null)
               }}
               isActiveTarget={selectionTarget === 'destination'}
@@ -453,8 +482,9 @@ export default function App() {
             <div className="cost-formula-callout">
               <code>C(e) = d(e) · (1 + α · T(e))</code>
               <p className="formula-note">
-                Physical sidewalk accessibility observations (A(e) from computer vision)
-                are under development and currently inactive.
+                For matched edges, T(e) in [0, 1] is simulated vehicular congestion.
+                For unmatched edges, traffic is unknown, so T(e) = 0 is applied (cost = physical length d(e);
+                missing traffic values are not measured zero congestion).
               </p>
             </div>
           </div>
@@ -472,7 +502,7 @@ export default function App() {
                   <span className="btn-spinner" /> Finding & comparing routes…
                 </>
               ) : (
-                <>🚀 Find and compare routes</>
+                <> Find and compare routes</>
               )}
             </button>
 
@@ -509,7 +539,7 @@ export default function App() {
               onClick={handleGoToElectronicCity}
               title="Center and fit map to Electronic City dataset bounds"
             >
-              🎯 Go to Electronic City
+              Go to Electronic City
             </button>
 
             <div className="toolbar-info-text">
@@ -524,7 +554,7 @@ export default function App() {
             route={route}
             comparison={comparison}
             electronicCityBounds={trafficInfo?.bounds}
-            targetBounds={targetBounds}
+            manualCameraAction={manualCameraAction}
             onLocationSelect={handleLocationSelectFromMap}
             selectionTarget={selectionTarget}
           />
@@ -540,6 +570,7 @@ export default function App() {
               </div>
               <p className="single-card-meta">
                 Baseline walking route calculated via Dijkstra on OpenStreetMap pedestrian network.
+                Preserves ability to calculate pedestrian paths anywhere walkable OpenStreetMap data is available.
               </p>
             </div>
           )}
@@ -552,23 +583,78 @@ export default function App() {
                 <div>
                   <h3 className="comparison-panel-title">Route Comparison Results</h3>
                   <p className="timestamp-badge">
-                    Traffic evaluation timestamp: <strong>{comparison.selected_timestamp}</strong>
+                    Simulated traffic evaluation time: <strong>{comparison.selected_timestamp}</strong>
                   </p>
                 </div>
                 <span className={`status-pill ${comparison.status}`}>
                   {comparison.status === 'alternative_found' &&
                     '✓ Alternative Route Found (Avoids High Traffic)'}
                   {comparison.status === 'identical_routes' &&
-                    'ℹ Shortest Path Is Already Optimal (Minimal Traffic)'}
+                    'ℹ Shortest Path Is Already Optimal (Minimal Congestion)'}
                   {comparison.status === 'no_traffic_coverage_in_area' &&
-                    '⚠️ Outside Traffic Coverage Area (Defaulted to Shortest)'}
+                    '⚠️ Outside Traffic Coverage Area (Shortest Walk Fallback)'}
                   {comparison.status === 'traffic_dataset_unavailable' &&
-                    '⚠️ Traffic Dataset Unavailable'}
+                    '⚠️ Traffic Dataset Offline (Shortest Walk Fallback)'}
+                  {comparison.status === 'partial_shortest_only' &&
+                    '⚠️ Traffic Alternative Unavailable (Shortest Walk Fallback)'}
                 </span>
               </div>
 
-              {/* Delta highlights callout */}
-              {distanceDelta !== null && comparison.status === 'alternative_found' && (
+              {/* Explanatory Fallback or Optimal Status Notice */}
+              {comparison.status === 'no_traffic_coverage_in_area' && (
+                <div className="fallback-explanation-banner">
+                  <span className="fallback-banner-icon">ℹ️</span>
+                  <div className="fallback-banner-text">
+                    <strong>Pedestrian route available; traffic data unavailable for this area.</strong>
+                    <p>
+                      The walking path was calculated using OpenStreetMap pedestrian data.
+                      However, vehicular traffic data is unavailable for road edges in this area
+                      (the simulated dataset covers Electronic City only). Because traffic conditions along these
+                      edges are unknown, the system falls back to the shortest physical walking route.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {comparison.status === 'identical_routes' && (
+                <div className="identical-explanation-banner">
+                  <span className="identical-banner-icon">✓</span>
+                  <div className="identical-banner-text">
+                    <strong>Shortest walking route is already optimal under simulated conditions.</strong>
+                    <p>
+                      The shortest walking path encounters minimal traffic impedance.
+                      Taking a detour to avoid congestion is not justified, so both route options follow the identical physical path.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {comparison.status === 'partial_shortest_only' && (
+                <div className="fallback-explanation-banner">
+                  <span className="fallback-banner-icon">⚠️</span>
+                  <div className="fallback-banner-text">
+                    <strong>Traffic-aware route calculation could not be completed.</strong>
+                    <p>
+                      Showing the verified shortest walking route as a safe fallback.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {comparison.status === 'traffic_dataset_unavailable' && (
+                <div className="fallback-explanation-banner">
+                  <span className="fallback-banner-icon">⚠️</span>
+                  <div className="fallback-banner-text">
+                    <strong>Electronic City traffic dataset is currently offline.</strong>
+                    <p>
+                      Showing the verified shortest walking route as a safe fallback.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Delta highlights callout - ONLY shown when a genuine traffic alternative exists with validated reduction */}
+              {hasImpedanceReduction && (
                 <div className="delta-highlight-callout">
                   <span className="delta-icon">💡</span>
                   <span>
@@ -576,7 +662,11 @@ export default function App() {
                     <strong>{formatDistance(Math.abs(distanceDelta))} longer</strong>{' '}
                     ({shortestDist ? ((distanceDelta / shortestDist) * 100).toFixed(1) : 0}%),
                     but reduces simulated traffic impedance by{' '}
-                    <strong>{Math.abs(costDelta || 0).toFixed(0)} units</strong>.
+                    <strong>{Math.abs(costDelta).toFixed(1)} units</strong>{' '}
+                    ({comparison.shortest_distance.cost > 0
+                      ? ((Math.abs(costDelta) / comparison.shortest_distance.cost) * 100).toFixed(1)
+                      : 0}%)
+                    based on {comparison.traffic_accessibility_aware.matched_traffic_edges_count} monitored road segments.
                   </span>
                 </div>
               )}
@@ -605,18 +695,50 @@ export default function App() {
                       <dt>Routing Impedance Cost</dt>
                       <dd>{comparison.shortest_distance.cost.toFixed(1)}</dd>
                     </div>
+
                     <div className="stat-row">
                       <dt>Traffic Data Coverage</dt>
-                      <dd>{comparison.shortest_distance.traffic_coverage_percent}%</dd>
+                      <dd>
+                        {comparison.shortest_distance.traffic_coverage_percent}%
+                        {comparison.shortest_distance.traffic_coverage_percent === 0 ? (
+                          <span className="coverage-subhint">
+                            0 of {comparison.shortest_distance.edges_count} edges (No traffic data for area; traffic conditions unknown)
+                          </span>
+                        ) : comparison.shortest_distance.traffic_coverage_percent < 100 ? (
+                          <span className="coverage-subhint">
+                            {comparison.shortest_distance.matched_traffic_edges_count} of{' '}
+                            {comparison.shortest_distance.edges_count} edges matched ({comparison.shortest_distance.edges_count - comparison.shortest_distance.matched_traffic_edges_count} unmatched edges have unknown traffic)
+                          </span>
+                        ) : (
+                          <span className="coverage-subhint" style={{ color: '#166534' }}>
+                            {comparison.shortest_distance.matched_traffic_edges_count} of{' '}
+                            {comparison.shortest_distance.edges_count} edges (Full dataset coverage)
+                          </span>
+                        )}
+                      </dd>
                     </div>
-                    {comparison.shortest_distance.average_congestion !== null && (
-                      <div className="stat-row">
-                        <dt>Average Congestion</dt>
-                        <dd>
-                          {(comparison.shortest_distance.average_congestion * 100).toFixed(1)}%
-                        </dd>
-                      </div>
-                    )}
+
+                    <div className="stat-row">
+                      <dt>Average Congestion</dt>
+                      <dd>
+                        {comparison.shortest_distance.average_congestion !== null ? (
+                          <>
+                            {(comparison.shortest_distance.average_congestion * 100).toFixed(1)}%
+                            <span className="congestion-unknown-note">
+                              Measured across {comparison.shortest_distance.matched_traffic_edges_count} monitored segment(s)
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            Unknown
+                            <span className="congestion-unknown-note">
+                              No monitored road segments; missing values are not zero congestion
+                            </span>
+                          </>
+                        )}
+                      </dd>
+                    </div>
+
                     <div className="stat-row">
                       <dt>Network Segments</dt>
                       <dd>{comparison.shortest_distance.edges_count} edges</dd>
@@ -629,8 +751,22 @@ export default function App() {
                   <div className="route-card-top">
                     <span className="route-color-indicator green-ind" />
                     <div>
-                      <h4>Traffic-Aware Alternative</h4>
-                      <span className="card-badge">Congestion-Averse</span>
+                      {hasTrafficAlternative ? (
+                        <>
+                          <h4>Traffic-Aware Alternative</h4>
+                          <span className="card-badge">Congestion-Averse Detour</span>
+                        </>
+                      ) : comparison.status === 'identical_routes' ? (
+                        <>
+                          <h4>Traffic-Aware Route</h4>
+                          <span className="card-badge optimal-badge">Identical to Shortest Walk</span>
+                        </>
+                      ) : (
+                        <>
+                          <h4>Traffic-Aware Route (Fallback)</h4>
+                          <span className="card-badge fallback-badge">Shortest Walk Fallback</span>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -638,10 +774,13 @@ export default function App() {
                     <span className="stat-label">Total Distance</span>
                     <span className="stat-value primary-green">
                       {formatDistance(comparison.traffic_accessibility_aware.distance_meters)}
-                      {distanceDelta !== null && distanceDelta !== 0 && (
+                      {hasTrafficAlternative && distanceDelta !== null && distanceDelta !== 0 && (
                         <span className="delta-subtext">
                           {distanceDelta > 0 ? ` (+${formatDistance(distanceDelta)})` : ` (${formatDistance(distanceDelta)})`}
                         </span>
+                      )}
+                      {!hasTrafficAlternative && (
+                        <span className="delta-subtext"> (Identical)</span>
                       )}
                     </span>
                   </div>
@@ -651,18 +790,50 @@ export default function App() {
                       <dt>Routing Impedance Cost</dt>
                       <dd>{comparison.traffic_accessibility_aware.cost.toFixed(1)}</dd>
                     </div>
+
                     <div className="stat-row">
                       <dt>Traffic Data Coverage</dt>
-                      <dd>{comparison.traffic_accessibility_aware.traffic_coverage_percent}%</dd>
+                      <dd>
+                        {comparison.traffic_accessibility_aware.traffic_coverage_percent}%
+                        {comparison.traffic_accessibility_aware.traffic_coverage_percent === 0 ? (
+                          <span className="coverage-subhint">
+                            0 of {comparison.traffic_accessibility_aware.edges_count} edges (No traffic data for area; traffic conditions unknown)
+                          </span>
+                        ) : comparison.traffic_accessibility_aware.traffic_coverage_percent < 100 ? (
+                          <span className="coverage-subhint">
+                            {comparison.traffic_accessibility_aware.matched_traffic_edges_count} of{' '}
+                            {comparison.traffic_accessibility_aware.edges_count} edges matched ({comparison.traffic_accessibility_aware.edges_count - comparison.traffic_accessibility_aware.matched_traffic_edges_count} unmatched edges have unknown traffic)
+                          </span>
+                        ) : (
+                          <span className="coverage-subhint" style={{ color: '#166534' }}>
+                            {comparison.traffic_accessibility_aware.matched_traffic_edges_count} of{' '}
+                            {comparison.traffic_accessibility_aware.edges_count} edges (Full dataset coverage)
+                          </span>
+                        )}
+                      </dd>
                     </div>
-                    {comparison.traffic_accessibility_aware.average_congestion !== null && (
-                      <div className="stat-row">
-                        <dt>Average Congestion</dt>
-                        <dd>
-                          {(comparison.traffic_accessibility_aware.average_congestion * 100).toFixed(1)}%
-                        </dd>
-                      </div>
-                    )}
+
+                    <div className="stat-row">
+                      <dt>Average Congestion</dt>
+                      <dd>
+                        {comparison.traffic_accessibility_aware.average_congestion !== null ? (
+                          <>
+                            {(comparison.traffic_accessibility_aware.average_congestion * 100).toFixed(1)}%
+                            <span className="congestion-unknown-note">
+                              Measured across {comparison.traffic_accessibility_aware.matched_traffic_edges_count} monitored segment(s)
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            Unknown
+                            <span className="congestion-unknown-note">
+                              No monitored road segments; missing values are not zero congestion
+                            </span>
+                          </>
+                        )}
+                      </dd>
+                    </div>
+
                     <div className="stat-row">
                       <dt>Network Segments</dt>
                       <dd>{comparison.traffic_accessibility_aware.edges_count} edges</dd>
@@ -678,8 +849,8 @@ export default function App() {
                   <strong>Academic Research Disclaimer:</strong> {comparison.disclaimer}
                   <br />
                   Traffic metrics represent simulated vehicular volume and flow from the
-                  Electronic City dataset. They do not certify sidewalk accessibility,
-                  pavement condition, curb ramp presence, or pedestrian safety guarantees.
+                  Electronic City dataset. They do not represent real-time sensor measurements,
+                  live traffic, or certified pedestrian sidewalk accessibility.
                 </p>
               </div>
             </div>

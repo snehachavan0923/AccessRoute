@@ -11,6 +11,7 @@ from backend.pedestrian_network import (
     NetworkDownloadError,
     OSMnxPedestrianNetworkProvider,
     PedestrianNetworkProvider,
+    get_default_network_provider,
 )
 from backend.routing.contracts import (
     Coordinate,
@@ -158,7 +159,7 @@ class TrafficAwarePathService:
         traffic_dataset: TrafficDataset | None = None,
         settings: NetworkAreaSettings | None = None,
     ) -> None:
-        self._network_provider = network_provider or OSMnxPedestrianNetworkProvider()
+        self._network_provider = network_provider or get_default_network_provider()
         self._settings = settings or NetworkAreaSettings.from_environment()
         self._dataset: TrafficDataset | None = traffic_dataset
         self._dataset_error: str | None = None
@@ -349,7 +350,7 @@ class TrafficRouteComparisonService:
         traffic_dataset: TrafficDataset | None = None,
         settings: NetworkAreaSettings | None = None,
     ) -> None:
-        self._network_provider = network_provider or OSMnxPedestrianNetworkProvider()
+        self._network_provider = network_provider or get_default_network_provider()
         self._settings = settings or NetworkAreaSettings.from_environment()
         self._traffic_service = TrafficAwarePathService(
             network_provider=self._network_provider,
@@ -386,11 +387,15 @@ class TrafficRouteComparisonService:
             )
 
         working_graph = graph.copy()
-        self._traffic_service._apply_traffic_weights(
-            working_graph,
-            selected_time_index=selected_time_index,
-            traffic_weight=traffic_weight,
-        )
+        traffic_weighting_failed = False
+        try:
+            self._traffic_service._apply_traffic_weights(
+                working_graph,
+                selected_time_index=selected_time_index,
+                traffic_weight=traffic_weight,
+            )
+        except Exception:
+            traffic_weighting_failed = True
 
         try:
             origin_node = nearest_network_node(working_graph, origin)
@@ -404,15 +409,6 @@ class TrafficRouteComparisonService:
                 weight="length",
                 method="dijkstra",
             )
-
-            # 2. Traffic-aware path (weight="traffic_cost")
-            traffic_node_path = nx.shortest_path(
-                working_graph,
-                source=origin_node,
-                target=destination_node,
-                weight="traffic_cost",
-                method="dijkstra",
-            )
         except (nx.NetworkXNoPath, nx.NodeNotFound) as error:
             raise RouteNotFoundError(
                 "No pedestrian path connects the selected locations."
@@ -421,6 +417,23 @@ class TrafficRouteComparisonService:
             raise RouteNetworkUnavailableError(
                 "The pedestrian network data could not be processed."
             ) from error
+
+        # 2. Traffic-aware path (weight="traffic_cost") with graceful partial fallback
+        traffic_routing_failed = traffic_weighting_failed
+        if not traffic_weighting_failed:
+            try:
+                traffic_node_path = nx.shortest_path(
+                    working_graph,
+                    source=origin_node,
+                    target=destination_node,
+                    weight="traffic_cost",
+                    method="dijkstra",
+                )
+            except Exception:
+                traffic_routing_failed = True
+                traffic_node_path = shortest_node_path
+        else:
+            traffic_node_path = shortest_node_path
 
         # Extract shortest route metrics under the same traffic conditions
         (
@@ -490,7 +503,9 @@ class TrafficRouteComparisonService:
         )
 
         # Determine status
-        if self._traffic_service.dataset is None:
+        if traffic_routing_failed:
+            status = "partial_shortest_only"
+        elif self._traffic_service.dataset is None:
             status = "traffic_dataset_unavailable"
         elif traffic_matched == 0 and shortest_matched == 0:
             status = "no_traffic_coverage_in_area"
