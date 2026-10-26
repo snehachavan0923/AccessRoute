@@ -18,6 +18,7 @@ import {
   getTrafficInfo,
 } from './services/routes'
 
+
 // Sample preset routes within Electronic City for instant 1-click testing
 const PRESET_ROUTES = [
   {
@@ -160,9 +161,9 @@ export default function App() {
   function handleGoToElectronicCity() {
     const bounds = trafficInfo?.bounds
       ? [
-          [trafficInfo.bounds.min_lat, trafficInfo.bounds.min_lon],
-          [trafficInfo.bounds.max_lat, trafficInfo.bounds.max_lon],
-        ]
+        [trafficInfo.bounds.min_lat, trafficInfo.bounds.min_lon],
+        [trafficInfo.bounds.max_lat, trafficInfo.bounds.max_lon],
+      ]
       : ELECTRONIC_CITY_DEFAULT_BOUNDS
     setManualCameraAction({ id: Date.now(), bounds })
   }
@@ -356,11 +357,10 @@ export default function App() {
             {/* Status indicator */}
             <div className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
               <span
-                className={`h-2 w-2 rounded-full ${
-                  trafficInfo?.available
+                className={`h-2 w-2 rounded-full ${trafficInfo?.available
                     ? 'bg-emerald-500 ring-2 ring-emerald-200'
                     : 'bg-slate-400'
-                }`}
+                  }`}
               />
               <span className="hidden sm:inline">
                 {trafficInfo?.available
