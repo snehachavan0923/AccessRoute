@@ -18,6 +18,17 @@ from osmnx._errors import InsufficientResponseError, ResponseStatusCodeError
 from requests import RequestException
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _resolve_cache_path(env_var: str, default: str) -> Path:
+    raw = os.environ.get(env_var, default)
+    path = Path(raw)
+    if not path.is_absolute():
+        path = (_PROJECT_ROOT / path).resolve()
+    return path
+
+
 @dataclass(frozen=True)
 class NetworkBounds:
     north: float
@@ -77,7 +88,7 @@ class PedestrianGraphCache:
         self.max_size = max_size
         self.ttl_seconds = ttl_seconds
         self.enable_disk_cache = enable_disk_cache
-        self._disk_cache_dir = Path(os.environ.get("ROUTING_GRAPH_DISK_CACHE_DIR", "./cache/graphs"))
+        self._disk_cache_dir = _resolve_cache_path("ROUTING_GRAPH_DISK_CACHE_DIR", "./cache/graphs")
         if self.enable_disk_cache:
             try:
                 self._disk_cache_dir.mkdir(parents=True, exist_ok=True)
@@ -152,7 +163,7 @@ class PedestrianGraphCache:
 
             # 4. Check OSMnx HTTP cache for existing enclosing response files
             if self.enable_disk_cache:
-                osmnx_cache = Path(os.environ.get("ROUTING_OSMNX_CACHE_DIR", "./cache"))
+                osmnx_cache = _resolve_cache_path("ROUTING_OSMNX_CACHE_DIR", "./cache")
                 if osmnx_cache.exists():
                     for json_file in osmnx_cache.glob("*.json"):
                         try:
@@ -259,8 +270,8 @@ class OSMnxPedestrianNetworkProvider:
         )
         ox.settings.requests_timeout = int(os.environ.get("ROUTING_OSMNX_TIMEOUT", "90"))
         ox.settings.use_cache = True
-        cache_dir = os.environ.get("ROUTING_OSMNX_CACHE_DIR", "./cache")
-        ox.settings.cache_folder = cache_dir
+        cache_dir = _resolve_cache_path("ROUTING_OSMNX_CACHE_DIR", "./cache")
+        ox.settings.cache_folder = str(cache_dir)
 
     def load(self, bounds: NetworkBounds) -> MultiDiGraph:
         self._configure_osmnx()
