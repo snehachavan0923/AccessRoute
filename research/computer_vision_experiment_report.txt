@@ -1,0 +1,57 @@
+
+AI-BASED ACCESSIBILITY AND TRAFFIC-AWARE ROUTE
+RECOMMENDATION FOR PUBLIC SPACES USING COMPUTER VISION
+
+1. OBJECTIVE
+To experiment with vehicle detection and tracking on a sample
+traffic video using computer vision.
+
+2. TECHNOLOGY USED
+- Python
+- Google Colab
+- Ultralytics YOLO11n
+- OpenCV
+- ByteTrack object tracker
+
+3. VIDEO DETAILS
+- Input file: road_trafifc.mp4
+- Frames processed: 301
+- Resolution: 640 x 360
+- Frame rate: approximately 29.97 FPS
+- Duration: approximately 10.04 seconds
+
+4. EXPERIMENT SETTINGS
+- Confidence threshold: 0.50
+- IoU threshold: 0.30 in the improved detection test
+- Tracker: ByteTrack
+
+5. PRELIMINARY TRACKING RESULTS
+- Cars: 20 tracked IDs
+- Buses: 2 tracked IDs
+- Trucks: 1 tracked ID
+- Motorcycles: 7 tracked IDs
+- Total: 29 tracked IDs
+
+These are estimated tracking IDs, not verified counts of
+unique physical vehicles.
+
+6. DETECTION EXPERIMENT
+In the tested frame, lowering the IoU threshold to 0.30
+reduced the bus detections from two boxes to one box.
+Across the full video, the maximum number of bus boxes
+in one frame was one in the tested configuration.
+
+7. LIMITATIONS
+- The same physical bus may receive multiple tracking IDs.
+- Vehicle detections may be missed or incorrectly classified.
+- Results come from a short sample video, not live citywide traffic.
+- Accessibility barriers such as ramps, stairs, and blocked
+  sidewalks have not yet been validated by this experiment.
+- Traffic levels cannot be reliably assigned from these counts
+  alone without a defined classification method.
+
+8. NEXT STEPS
+- Validate detections and tracking on additional video frames.
+- Define a reliable traffic-level classification method.
+- Develop or integrate an accessibility observation workflow.
+- Connect the outputs to the backend and route recommendation system.

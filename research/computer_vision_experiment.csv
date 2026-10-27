@@ -1,0 +1,9 @@
+Metric,Result
+Video frames,301
+Confidence threshold,0.5
+IoU threshold,0.3
+Frames containing bus detections,248
+Total bus detections across frames,248
+Maximum bus boxes in one frame,1
+Distinct bus tracking IDs,"2, 19"
+Tracking limitation,Possible ID switch; needs visual verification

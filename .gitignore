@@ -41,3 +41,7 @@ __pycache__/
 traffic_data/
 electronic-city-traffic-clean/
 
+# Computer vision model weights
+backend/vision/weights/
+*.pt
+

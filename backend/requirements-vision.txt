@@ -1,0 +1,8 @@
+# Computer Vision Dependencies for AccessRoute
+# Installed alongside backend/requirements.txt without altering core pedestrian routing packages.
+# Uses headless OpenCV to prevent GUI/libGL package conflicts with opencv-python-headless.
+
+ultralytics-opencv-headless==8.4.189
+torch==2.14.1
+torchvision==0.29.1
+lapx==0.11.1
