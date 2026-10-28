@@ -1,16 +1,39 @@
 """Unit tests for the vision schemas and service foundation."""
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import unittest
 from unittest.mock import MagicMock, patch
 
 from pydantic import ValidationError
 
+from backend.vision.evaluate_pipeline import (
+    DEFAULT_EVAL_MAX_FRAMES,
+    PipelineEvaluationReport,
+    ReclassifiedDetection,
+    TrackletDetail,
+    build_arg_parser,
+    evaluate_frames,
+    evaluate_video,
+    format_evaluation_report,
+    main as eval_main,
+    save_evaluation_outputs,
+)
+from backend.vision.post_processor import (
+    DEFAULT_MIN_TRACK_LIFESPAN_FRAMES,
+    PostProcessedVideoResult,
+    PostProcessingSummary,
+    Tracklet,
+    TrackletPostProcessor,
+)
 from backend.vision.schemas import (
     BoundingBox,
+    CameraMetadata,
     DetectedObject,
     FrameDetectionResult,
+    ObservationTimeEnvelope,
     VideoAnalysisSummary,
+    VisionEdgeObservation,
 )
 from backend.vision.service import (
     DEFAULT_MODEL_NAME,
@@ -791,5 +814,1433 @@ class TestVideoProcessingAndSummary(unittest.TestCase):
         self.assertEqual(DEFAULT_MODEL_NAME, str(EXPECTED_WEIGHTS_PATH))
 
 
+class TestCameraMetadata(unittest.TestCase):
+    """Tests for CameraMetadata validation and constraints."""
+
+    def test_valid_minimal_camera_metadata(self) -> None:
+        camera = CameraMetadata(
+            camera_id="cam_main_st_01",
+            latitude=19.0760,
+            longitude=72.8777,
+            heading_degrees=45.0,
+        )
+        self.assertEqual(camera.camera_id, "cam_main_st_01")
+        self.assertEqual(camera.latitude, 19.0760)
+        self.assertEqual(camera.longitude, 72.8777)
+        self.assertEqual(camera.heading_degrees, 45.0)
+        self.assertIsNone(camera.elevation_meters)
+        self.assertIsNone(camera.tilt_degrees)
+        self.assertIsNone(camera.target_osm_u)
+        self.assertIsNone(camera.target_osm_v)
+        self.assertEqual(camera.target_osm_key, 0)
+        self.assertFalse(camera.is_spatially_calibrated)
+
+    def test_valid_full_camera_metadata(self) -> None:
+        camera = CameraMetadata(
+            camera_id="cam_junction_02",
+            latitude=19.0760,
+            longitude=72.8777,
+            elevation_meters=8.5,
+            heading_degrees=180.0,
+            tilt_degrees=-25.0,
+            target_osm_u=1001,
+            target_osm_v=1002,
+            target_osm_key=0,
+            is_spatially_calibrated=True,
+        )
+        self.assertEqual(camera.elevation_meters, 8.5)
+        self.assertEqual(camera.tilt_degrees, -25.0)
+        self.assertEqual(camera.target_osm_u, 1001)
+        self.assertEqual(camera.target_osm_v, 1002)
+        self.assertTrue(camera.is_spatially_calibrated)
+
+    def test_valid_boundary_coordinates_and_heading(self) -> None:
+        cam_min = CameraMetadata(
+            camera_id="cam_min",
+            latitude=-90.0,
+            longitude=-180.0,
+            heading_degrees=0.0,
+        )
+        self.assertEqual(cam_min.latitude, -90.0)
+        self.assertEqual(cam_min.longitude, -180.0)
+        self.assertEqual(cam_min.heading_degrees, 0.0)
+
+        cam_max = CameraMetadata(
+            camera_id="cam_max",
+            latitude=90.0,
+            longitude=180.0,
+            heading_degrees=359.99,
+        )
+        self.assertEqual(cam_max.latitude, 90.0)
+        self.assertEqual(cam_max.longitude, 180.0)
+        self.assertEqual(cam_max.heading_degrees, 359.99)
+
+    def test_invalid_latitude_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=90.001, longitude=0.0, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=-90.001, longitude=0.0, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=float("nan"), longitude=0.0, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=float("inf"), longitude=0.0, heading_degrees=0.0)
+
+    def test_invalid_longitude_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=180.001, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=-180.001, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=float("nan"), heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=float("-inf"), heading_degrees=0.0)
+
+    def test_invalid_heading_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=-0.01)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=360.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=float("nan"))
+
+    def test_invalid_elevation_and_tilt_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=0.0,
+                elevation_meters=-0.1,
+            )
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=0.0,
+                elevation_meters=float("nan"),
+            )
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=0.0,
+                tilt_degrees=-90.1,
+            )
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=0.0,
+                tilt_degrees=90.1,
+            )
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c", latitude=0.0, longitude=0.0, heading_degrees=0.0,
+                tilt_degrees=float("inf"),
+            )
+
+    def test_empty_or_whitespace_camera_id_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="", latitude=0.0, longitude=0.0, heading_degrees=0.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="   ", latitude=0.0, longitude=0.0, heading_degrees=0.0)
+
+    def test_missing_required_camera_fields_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(latitude=0.0, longitude=0.0, heading_degrees=0.0)  # missing camera_id
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", longitude=0.0, heading_degrees=0.0)  # missing latitude
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, heading_degrees=0.0)  # missing longitude
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=0.0, longitude=0.0)  # missing heading_degrees
+
+    def test_immutability_and_serialization(self) -> None:
+        camera = CameraMetadata(
+            camera_id="cam_immutability",
+            latitude=19.0,
+            longitude=72.0,
+            heading_degrees=90.0,
+        )
+        with self.assertRaises(ValidationError):
+            camera.latitude = 20.0
+
+        dumped = camera.model_dump()
+        self.assertEqual(dumped["camera_id"], "cam_immutability")
+        self.assertEqual(dumped["latitude"], 19.0)
+        json_str = camera.model_dump_json()
+        self.assertIn('"cam_immutability"', json_str)
+
+    def test_spatial_calibration_requires_target_osm_nodes(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            CameraMetadata(
+                camera_id="cam_uncal",
+                latitude=19.0,
+                longitude=72.0,
+                heading_degrees=90.0,
+                is_spatially_calibrated=True,  # Missing target_osm_u and target_osm_v
+            )
+        self.assertIn("is_spatially_calibrated cannot be True", str(context.exception))
+
+    def test_partial_target_osm_nodes_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            CameraMetadata(
+                camera_id="c",
+                latitude=19.0,
+                longitude=72.0,
+                heading_degrees=90.0,
+                target_osm_u=1001,  # target_osm_v is None
+            )
+        self.assertIn("must both be specified together", str(context.exception))
+
+        with self.assertRaises(ValidationError) as context:
+            CameraMetadata(
+                camera_id="c",
+                latitude=19.0,
+                longitude=72.0,
+                heading_degrees=90.0,
+                target_osm_v=1002,  # target_osm_u is None
+            )
+        self.assertIn("must both be specified together", str(context.exception))
+
+    def test_self_loop_target_edge_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            CameraMetadata(
+                camera_id="c",
+                latitude=19.0,
+                longitude=72.0,
+                heading_degrees=90.0,
+                target_osm_u=1001,
+                target_osm_v=1001,  # Self loop u == v
+            )
+        self.assertIn("self-loops are not allowed", str(context.exception))
+
+    def test_boolean_coordinates_and_nodes_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            CameraMetadata(camera_id="c", latitude=True, longitude=72.0, heading_degrees=90.0)
+        with self.assertRaises(ValidationError):
+            CameraMetadata(
+                camera_id="c",
+                latitude=19.0,
+                longitude=72.0,
+                heading_degrees=90.0,
+                target_osm_u=True,
+                target_osm_v=1002,
+            )
+
+    def test_camera_target_aliases(self) -> None:
+        cam = CameraMetadata(
+            camera_id="c_alias",
+            latitude=19.0,
+            longitude=72.0,
+            heading_degrees=90.0,
+            target_u=1001,
+            target_v=1002,
+            target_key=1,
+        )
+        self.assertEqual(cam.target_osm_u, 1001)
+        self.assertEqual(cam.target_osm_v, 1002)
+        self.assertEqual(cam.target_osm_key, 1)
+
+
+class TestObservationTimeEnvelope(unittest.TestCase):
+    """Tests for ObservationTimeEnvelope validation and constraints."""
+
+    def setUp(self) -> None:
+        self.start_utc = datetime(2026, 10, 27, 10, 0, 0, tzinfo=timezone.utc)
+        self.end_utc = datetime(2026, 10, 27, 10, 5, 0, tzinfo=timezone.utc)
+
+    def test_valid_observation_time_envelope(self) -> None:
+        envelope = ObservationTimeEnvelope(
+            start_time=self.start_utc,
+            end_time=self.end_utc,
+            duration_seconds=300.0,
+        )
+        self.assertEqual(envelope.start_time, self.start_utc)
+        self.assertEqual(envelope.end_time, self.end_utc)
+        self.assertEqual(envelope.duration_seconds, 300.0)
+        self.assertEqual(envelope.time_to_live_seconds, 900.0)
+
+    def test_auto_duration_calculation_when_omitted(self) -> None:
+        envelope = ObservationTimeEnvelope(
+            start_time=self.start_utc,
+            end_time=self.end_utc,
+        )
+        self.assertEqual(envelope.duration_seconds, 300.0)
+
+    def test_captured_at_utc_alias_support(self) -> None:
+        envelope = ObservationTimeEnvelope(
+            captured_at_utc=self.start_utc,
+            end_time=self.end_utc,
+        )
+        self.assertEqual(envelope.start_time, self.start_utc)
+        self.assertEqual(envelope.duration_seconds, 300.0)
+
+    def test_naive_timestamp_rejected(self) -> None:
+        naive_start = datetime(2026, 10, 27, 10, 0, 0)
+        naive_end = datetime(2026, 10, 27, 10, 5, 0)
+
+        with self.assertRaises(ValidationError) as context:
+            ObservationTimeEnvelope(
+                start_time=naive_start,
+                end_time=self.end_utc,
+                duration_seconds=300.0,
+            )
+        self.assertIn("must be timezone-aware", str(context.exception))
+
+        with self.assertRaises(ValidationError) as context:
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=naive_end,
+                duration_seconds=300.0,
+            )
+        self.assertIn("must be timezone-aware", str(context.exception))
+
+    def test_end_time_not_strictly_after_start_time_rejected(self) -> None:
+        # Equal timestamps
+        with self.assertRaises(ValidationError) as context:
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.start_utc,
+                duration_seconds=1.0,
+            )
+        self.assertIn("strictly after start_time", str(context.exception))
+
+        # Inverted timestamps (end earlier than start)
+        with self.assertRaises(ValidationError) as context:
+            ObservationTimeEnvelope(
+                start_time=self.end_utc,
+                end_time=self.start_utc,
+                duration_seconds=300.0,
+            )
+        self.assertIn("strictly after start_time", str(context.exception))
+
+    def test_duration_mismatch_rejected(self) -> None:
+        # Actual elapsed is 300.0s, but user specified 100.0s
+        with self.assertRaises(ValidationError) as context:
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=100.0,
+            )
+        self.assertIn("does not match the elapsed time", str(context.exception))
+
+    def test_invalid_duration_and_ttl_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=0.0,
+            )
+        with self.assertRaises(ValidationError):
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=-10.0,
+            )
+        with self.assertRaises(ValidationError):
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=300.0,
+                time_to_live_seconds=30.0,  # Below 60.0s minimum
+            )
+
+    def test_serialization_and_immutability(self) -> None:
+        envelope = ObservationTimeEnvelope(
+            start_time=self.start_utc,
+            end_time=self.end_utc,
+            duration_seconds=300.0,
+        )
+        with self.assertRaises(ValidationError):
+            envelope.duration_seconds = 500.0
+
+        dumped = envelope.model_dump()
+        reconstituted = ObservationTimeEnvelope.model_validate(dumped)
+        self.assertEqual(reconstituted.start_time, self.start_utc)
+        self.assertEqual(reconstituted.end_time, self.end_utc)
+
+    def test_captured_at_utc_and_duration_auto_computes_end_time(self) -> None:
+        envelope = ObservationTimeEnvelope(
+            captured_at_utc=self.start_utc,
+            duration_seconds=60.0,
+        )
+        self.assertEqual(envelope.start_time, self.start_utc)
+        self.assertEqual(envelope.end_time, self.start_utc + timedelta(seconds=60.0))
+        self.assertEqual(envelope.duration_seconds, 60.0)
+        self.assertEqual(envelope.captured_at_utc, self.start_utc)
+
+    def test_string_iso_timestamps_auto_compute_duration(self) -> None:
+        envelope = ObservationTimeEnvelope.model_validate({
+            "start_time": "2026-10-27T10:00:00Z",
+            "end_time": "2026-10-27T10:05:00Z",
+        })
+        self.assertEqual(envelope.duration_seconds, 300.0)
+        self.assertEqual(envelope.start_time, self.start_utc)
+        self.assertEqual(envelope.end_time, self.end_utc)
+
+    def test_boolean_timing_numbers_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=True,
+            )
+        with self.assertRaises(ValidationError):
+            ObservationTimeEnvelope(
+                start_time=self.start_utc,
+                end_time=self.end_utc,
+                duration_seconds=300.0,
+                time_to_live_seconds=False,
+            )
+
+
+class TestVisionEdgeObservation(unittest.TestCase):
+    """Tests for VisionEdgeObservation payload validation and constraints."""
+
+    def setUp(self) -> None:
+        start_utc = datetime(2026, 10, 27, 10, 0, 0, tzinfo=timezone.utc)
+        end_utc = datetime(2026, 10, 27, 10, 5, 0, tzinfo=timezone.utc)
+        self.timing = ObservationTimeEnvelope(
+            start_time=start_utc,
+            end_time=end_utc,
+            duration_seconds=300.0,
+        )
+        self.camera = CameraMetadata(
+            camera_id="cam_main_01",
+            latitude=19.0760,
+            longitude=72.8777,
+            heading_degrees=90.0,
+        )
+
+    def test_valid_vision_edge_observation(self) -> None:
+        obs = VisionEdgeObservation(
+            camera_id="cam_main_01",
+            osm_u=1001,
+            osm_v=1002,
+            osm_key=0,
+            timing=self.timing,
+            unique_vehicles_observed=15,
+            vehicles_by_class={"car": 12, "bus": 2, "motorcycle": 1},
+            total_detection_events=450,
+            average_speed_kmh=28.4,
+            observation_quality_score=0.92,
+            experimental_congestion_index=0.35,
+        )
+        self.assertEqual(obs.camera_id, "cam_main_01")
+        self.assertEqual(obs.osm_u, 1001)
+        self.assertEqual(obs.osm_v, 1002)
+        self.assertEqual(obs.osm_key, 0)
+        self.assertEqual(obs.unique_vehicles_observed, 15)
+        self.assertEqual(obs.vehicles_by_class["car"], 12)
+        self.assertEqual(obs.total_detection_events, 450)
+        self.assertAlmostEqual(obs.average_speed_kmh, 28.4)
+        self.assertAlmostEqual(obs.observation_quality_score, 0.92)
+        self.assertAlmostEqual(obs.experimental_congestion_index, 0.35)
+        self.assertIn("experimental", obs.disclaimer.lower())
+
+    def test_camera_metadata_and_alias_inputs(self) -> None:
+        # Pass CameraMetadata instance as 'camera'
+        obs1 = VisionEdgeObservation(
+            camera=self.camera,
+            osm_u=1001,
+            osm_v=1002,
+            timing=self.timing,
+            unique_vehicles_observed=5,
+        )
+        self.assertEqual(obs1.camera_id, "cam_main_01")
+        self.assertEqual(obs1.camera_metadata, self.camera)
+
+        # Pass dict as 'camera'
+        obs2 = VisionEdgeObservation(
+            camera={"camera_id": "cam_dict_02"},
+            osm_u=2001,
+            osm_v=2002,
+            timing=self.timing,
+            unique_vehicles_observed=0,
+        )
+        self.assertEqual(obs2.camera_id, "cam_dict_02")
+
+        # Pass string as 'camera'
+        obs3 = VisionEdgeObservation(
+            camera="cam_str_03",
+            osm_u=3001,
+            osm_v=3002,
+            timing=self.timing,
+            unique_vehicles_observed=0,
+        )
+        self.assertEqual(obs3.camera_id, "cam_str_03")
+
+    def test_missing_required_identifiers_rejected(self) -> None:
+        # Missing camera_id
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        # Empty camera_id
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="   ",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        # Missing osm_u
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        # Missing osm_v
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        # Missing timing
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                unique_vehicles_observed=5,
+            )
+
+    def test_negative_vehicle_counts_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=-1,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                total_detection_events=-1,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                vehicles_by_class={"car": -3},
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                vehicles_by_class={"": 3},
+            )
+
+    def test_quality_and_congestion_index_range_validation(self) -> None:
+        # Quality score out of [0.0, 1.0]
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                observation_quality_score=-0.01,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                observation_quality_score=1.01,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                observation_quality_score=float("nan"),
+            )
+
+        # Experimental congestion index out of [0.0, 1.0]
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                experimental_congestion_index=-0.1,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                experimental_congestion_index=1.01,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                experimental_congestion_index=float("nan"),
+            )
+
+        # Default is None
+        obs = VisionEdgeObservation(
+            camera_id="cam_01",
+            osm_u=1001,
+            osm_v=1002,
+            timing=self.timing,
+            unique_vehicles_observed=5,
+        )
+        self.assertIsNone(obs.experimental_congestion_index)
+
+    def test_serialization_and_immutability(self) -> None:
+        obs = VisionEdgeObservation(
+            camera_id="cam_main_01",
+            osm_u=1001,
+            osm_v=1002,
+            timing=self.timing,
+            unique_vehicles_observed=10,
+        )
+        with self.assertRaises(ValidationError):
+            obs.unique_vehicles_observed = 20
+
+        dumped = obs.model_dump()
+        reconstituted = VisionEdgeObservation.model_validate(dumped)
+        self.assertEqual(reconstituted.camera_id, "cam_main_01")
+        self.assertEqual(reconstituted.unique_vehicles_observed, 10)
+
+    def test_self_loop_road_edge_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1001,  # Self loop
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        self.assertIn("self-loops are not valid road edges", str(context.exception))
+
+    def test_edge_and_camera_property_aliases(self) -> None:
+        obs = VisionEdgeObservation(
+            camera=self.camera,
+            osm_u=1001,
+            osm_v=1002,
+            osm_key=1,
+            timing=self.timing,
+            unique_vehicles_observed=5,
+        )
+        self.assertEqual(obs.u, 1001)
+        self.assertEqual(obs.v, 1002)
+        self.assertEqual(obs.key, 1)
+        self.assertEqual(obs.camera, self.camera)
+        self.assertEqual(obs.edge_tuple(), (1001, 1002, 1))
+
+    def test_edge_aliases_in_constructor(self) -> None:
+        obs = VisionEdgeObservation(
+            camera_id="cam_01",
+            u=2001,
+            v=2002,
+            key=2,
+            timing=self.timing,
+            unique_vehicles_observed=5,
+        )
+        self.assertEqual(obs.osm_u, 2001)
+        self.assertEqual(obs.osm_v, 2002)
+        self.assertEqual(obs.osm_key, 2)
+
+    def test_auto_populate_edge_from_calibrated_camera(self) -> None:
+        calibrated_cam = CameraMetadata(
+            camera_id="cam_calibrated_01",
+            latitude=19.0760,
+            longitude=72.8777,
+            heading_degrees=90.0,
+            target_osm_u=5001,
+            target_osm_v=5002,
+            target_osm_key=0,
+            is_spatially_calibrated=True,
+        )
+        obs = VisionEdgeObservation(
+            camera=calibrated_cam,
+            timing=self.timing,
+            unique_vehicles_observed=3,
+        )
+        self.assertEqual(obs.osm_u, 5001)
+        self.assertEqual(obs.osm_v, 5002)
+        self.assertEqual(obs.osm_key, 0)
+        self.assertEqual(obs.camera_id, "cam_calibrated_01")
+
+    def test_conflicting_camera_target_edge_rejected(self) -> None:
+        cam_with_target = CameraMetadata(
+            camera_id="cam_calibrated_02",
+            latitude=19.0760,
+            longitude=72.8777,
+            heading_degrees=90.0,
+            target_osm_u=5001,
+            target_osm_v=5002,
+        )
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera=cam_with_target,
+                osm_u=9999,  # Mismatched edge
+                osm_v=8888,
+                timing=self.timing,
+                unique_vehicles_observed=3,
+            )
+        self.assertIn("conflicts with camera's target edge", str(context.exception))
+
+    def test_conflicting_camera_id_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera_id="cam_declared",
+                camera_metadata=self.camera,  # self.camera has camera_id="cam_main_01"
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        self.assertIn("conflicts with camera_metadata.camera_id", str(context.exception))
+
+    def test_vehicle_count_sanity_checks(self) -> None:
+        # unique_vehicles_observed cannot be less than the count for any single class
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=3,
+                vehicles_by_class={"car": 10},
+            )
+        self.assertIn("cannot be less than the count for any individual vehicle class", str(context.exception))
+
+        # total_detection_events cannot be less than unique_vehicles_observed
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=10,
+                total_detection_events=4,
+            )
+        self.assertIn("cannot be less than unique_vehicles_observed", str(context.exception))
+
+    def test_empty_disclaimer_rejected(self) -> None:
+        with self.assertRaises(ValidationError) as context:
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+                disclaimer="   ",
+            )
+        self.assertIn("disclaimer must not be empty", str(context.exception))
+
+    def test_boolean_node_identifiers_rejected(self) -> None:
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=True,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=5,
+            )
+        with self.assertRaises(ValidationError):
+            VisionEdgeObservation(
+                camera_id="cam_01",
+                osm_u=1001,
+                osm_v=1002,
+                timing=self.timing,
+                unique_vehicles_observed=True,
+            )
+
+
+class TestVisionSchemasBackwardCompatibility(unittest.TestCase):
+    """Verify existing vision schemas and detection outputs remain 100% backward compatible."""
+
+    def test_existing_schemas_preserve_backward_compatibility(self) -> None:
+        box = BoundingBox(x_min=5.0, y_min=10.0, x_max=50.0, y_max=60.0)
+        obj = DetectedObject(class_name="car", confidence=0.88, bounding_box=box, track_id=3)
+        frame = FrameDetectionResult.from_detections(
+            frame_number=0,
+            timestamp_seconds=0.0,
+            detections=[obj],
+        )
+        summary = VideoAnalysisSummary(
+            video_name="test_traffic.mp4",
+            total_frames=10,
+            processed_frames=1,
+            duration_seconds=0.33,
+            fps=30.0,
+            class_counts={"car": 1},
+            total_detections=1,
+            tracked_id_counts={"car": 1},
+            total_tracked_ids=1,
+        )
+
+        self.assertEqual(box.x_min, 5.0)
+        self.assertEqual(obj.track_id, 3)
+        self.assertEqual(frame.detection_count, 1)
+        self.assertEqual(summary.class_counts["car"], 1)
+        self.assertEqual(summary.total_detections, 1)
+        self.assertEqual(summary.total_tracked_ids, 1)
+        self.assertIn("per-frame detection events", summary.disclaimer)
+
+
+class TestTrackletPostProcessor(unittest.TestCase):
+    """Unit tests for offline TrackletPostProcessor and post-processing schemas."""
+
+    def setUp(self) -> None:
+        self.box = BoundingBox(x_min=10.0, y_min=20.0, x_max=60.0, y_max=80.0)
+
+    def test_empty_input(self) -> None:
+        processor = TrackletPostProcessor()
+        result = processor.process_frames([])
+        self.assertIsInstance(result, PostProcessedVideoResult)
+        self.assertEqual(result.summary.raw_total_detections, 0)
+        self.assertEqual(result.summary.raw_total_tracked_ids, 0)
+        self.assertEqual(result.summary.processed_total_detections, 0)
+        self.assertEqual(result.summary.processed_total_tracked_ids, 0)
+        self.assertEqual(len(result.tracklets), 0)
+        self.assertEqual(len(result.filtered_track_ids), 0)
+        self.assertEqual(len(result.frames), 0)
+        self.assertIn("heuristics", result.summary.disclaimer.lower())
+
+    def test_normal_operation_and_metrics(self) -> None:
+        frames: list[FrameDetectionResult] = []
+        for fn in range(6):
+            det1 = DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=1)
+            det2 = DetectedObject(class_name="bus", confidence=0.85, bounding_box=self.box, track_id=2)
+            frames.append(
+                FrameDetectionResult.from_detections(
+                    frame_number=fn,
+                    timestamp_seconds=fn / 30.0,
+                    detections=[det1, det2],
+                )
+            )
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=5)
+        result = processor.process_frames(frames)
+
+        self.assertEqual(result.summary.raw_total_tracked_ids, 2)
+        self.assertEqual(result.summary.processed_total_tracked_ids, 2)
+        self.assertEqual(result.summary.raw_total_detections, 12)
+        self.assertEqual(result.summary.processed_total_detections, 12)
+        self.assertEqual(result.summary.filtered_tracks_count, 0)
+        self.assertEqual(result.summary.raw_class_switches_count, 0)
+
+        # Inspect Tracklet 1
+        t1 = result.tracklets[1]
+        self.assertEqual(t1.track_id, 1)
+        self.assertEqual(t1.assigned_class, "car")
+        self.assertEqual(t1.detection_count, 6)
+        self.assertEqual(t1.observed_frame_count, 6)
+        self.assertEqual(t1.first_frame, 0)
+        self.assertEqual(t1.last_frame, 5)
+        self.assertEqual(t1.lifespan_frames, 6)
+        self.assertAlmostEqual(t1.average_confidence, 0.90)
+        self.assertFalse(t1.is_filtered)
+        self.assertFalse(t1.has_class_switch)
+
+        # Inspect Tracklet 2
+        t2 = result.tracklets[2]
+        self.assertEqual(t2.track_id, 2)
+        self.assertEqual(t2.assigned_class, "bus")
+        self.assertFalse(t2.is_filtered)
+
+    def test_temporal_majority_voting_and_reclassification(self) -> None:
+        # Track 10: 4 frames as "car" and 1 frame as "truck" (class switch)
+        frames: list[FrameDetectionResult] = []
+        for fn in range(4):
+            det = DetectedObject(class_name="car", confidence=0.88, bounding_box=self.box, track_id=10)
+            frames.append(FrameDetectionResult.from_detections(frame_number=fn, timestamp_seconds=fn * 0.1, detections=[det]))
+
+        # Frame 4 has class switch to "truck"
+        det_switched = DetectedObject(class_name="truck", confidence=0.75, bounding_box=self.box, track_id=10)
+        frames.append(FrameDetectionResult.from_detections(frame_number=4, timestamp_seconds=0.4, detections=[det_switched]))
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=3)
+        result = processor.process_frames(frames)
+
+        self.assertEqual(result.summary.raw_class_switches_count, 1)
+        self.assertEqual(result.summary.resolved_class_switches_count, 1)
+
+        t10 = result.tracklets[10]
+        self.assertEqual(t10.assigned_class, "car")
+        self.assertTrue(t10.has_class_switch)
+        self.assertEqual(t10.original_classes, {"car": 4, "truck": 1})
+
+        # Frame 4 in post-processed frames must now be reclassified to "car"
+        frame_4_processed = result.frames[4]
+        self.assertEqual(len(frame_4_processed.detections), 1)
+        self.assertEqual(frame_4_processed.detections[0].class_name, "car")
+        self.assertEqual(frame_4_processed.detections[0].track_id, 10)
+        self.assertEqual(frame_4_processed.detections[0].confidence, 0.75)
+
+        # In summary, track 10 counts under "car", not "truck"
+        self.assertEqual(result.summary.processed_tracked_id_counts, {"car": 1})
+        self.assertEqual(result.summary.processed_class_counts, {"car": 5})
+
+    def test_deterministic_tie_breaking_confidence_sum(self) -> None:
+        # Track 20: 2 "car" detections (conf 0.90, 0.90 -> sum 1.80)
+        #           2 "truck" detections (conf 0.60, 0.60 -> sum 1.20)
+        # Frequency is tied (2 vs 2); "car" wins due to higher sum of confidence
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0, timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=20)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1, timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=20)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=2, timestamp_seconds=0.2,
+                detections=[DetectedObject(class_name="truck", confidence=0.60, bounding_box=self.box, track_id=20)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=3, timestamp_seconds=0.3,
+                detections=[DetectedObject(class_name="truck", confidence=0.60, bounding_box=self.box, track_id=20)],
+            ),
+        ]
+        processor = TrackletPostProcessor(min_track_lifespan_frames=2)
+        result = processor.process_frames(frames)
+        self.assertEqual(result.tracklets[20].assigned_class, "car")
+
+    def test_deterministic_tie_breaking_max_confidence(self) -> None:
+        # Track 30: 2 "car" (conf 0.80, 0.40 -> sum 1.20, max 0.80)
+        #           2 "truck" (conf 0.60, 0.60 -> sum 1.20, max 0.60)
+        # Frequency tied, sum tied; "car" wins due to peak max confidence (0.80 > 0.60)
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0, timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.80, bounding_box=self.box, track_id=30)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1, timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="car", confidence=0.40, bounding_box=self.box, track_id=30)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=2, timestamp_seconds=0.2,
+                detections=[DetectedObject(class_name="truck", confidence=0.60, bounding_box=self.box, track_id=30)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=3, timestamp_seconds=0.3,
+                detections=[DetectedObject(class_name="truck", confidence=0.60, bounding_box=self.box, track_id=30)],
+            ),
+        ]
+        processor = TrackletPostProcessor(min_track_lifespan_frames=2)
+        result = processor.process_frames(frames)
+        self.assertEqual(result.tracklets[30].assigned_class, "car")
+
+    def test_deterministic_tie_breaking_alphabetical(self) -> None:
+        # Track 40: 2 "bus" (conf 0.70, 0.70 -> sum 1.40, max 0.70)
+        #           2 "car" (conf 0.70, 0.70 -> sum 1.40, max 0.70)
+        # Frequency tied, sum tied, max tied; "bus" wins alphabetically ('bus' < 'car')
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0, timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="bus", confidence=0.70, bounding_box=self.box, track_id=40)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1, timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="bus", confidence=0.70, bounding_box=self.box, track_id=40)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=2, timestamp_seconds=0.2,
+                detections=[DetectedObject(class_name="car", confidence=0.70, bounding_box=self.box, track_id=40)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=3, timestamp_seconds=0.3,
+                detections=[DetectedObject(class_name="car", confidence=0.70, bounding_box=self.box, track_id=40)],
+            ),
+        ]
+        processor = TrackletPostProcessor(min_track_lifespan_frames=2)
+        result = processor.process_frames(frames)
+        self.assertEqual(result.tracklets[40].assigned_class, "bus")
+
+    def test_short_track_lifespan_filtering(self) -> None:
+        # Track 100: appears in 5 frames (retained)
+        # Track 101: appears in 2 frames (filtered)
+        # Track 102: appears in 1 frame (filtered)
+        frames: list[FrameDetectionResult] = []
+        for fn in range(5):
+            dets = [DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=100)]
+            if fn < 2:
+                dets.append(DetectedObject(class_name="motorcycle", confidence=0.80, bounding_box=self.box, track_id=101))
+            if fn == 0:
+                dets.append(DetectedObject(class_name="truck", confidence=0.85, bounding_box=self.box, track_id=102))
+            frames.append(FrameDetectionResult.from_detections(frame_number=fn, timestamp_seconds=fn * 0.1, detections=dets))
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=5)
+        result = processor.process_frames(frames)
+
+        self.assertEqual(result.summary.raw_total_tracked_ids, 3)
+        self.assertEqual(result.summary.processed_total_tracked_ids, 1)
+        self.assertEqual(result.summary.filtered_tracks_count, 2)
+        self.assertEqual(result.filtered_track_ids, [101, 102])
+
+        self.assertFalse(result.tracklets[100].is_filtered)
+        self.assertTrue(result.tracklets[101].is_filtered)
+        self.assertTrue(result.tracklets[102].is_filtered)
+
+        # In processed frames, only Track 100 should remain
+        for pf in result.frames:
+            for det in pf.detections:
+                self.assertEqual(det.track_id, 100)
+
+    def test_lifespan_filtering_disabled(self) -> None:
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0, timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=50)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1, timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=50)],
+            ),
+        ]
+        processor = TrackletPostProcessor(min_track_lifespan_frames=5, filter_short_tracks=False)
+        result = processor.process_frames(frames)
+
+        self.assertFalse(result.tracklets[50].is_filtered)
+        self.assertEqual(result.summary.filtered_tracks_count, 0)
+        self.assertEqual(result.summary.processed_total_tracked_ids, 1)
+        self.assertEqual(len(result.frames[0].detections), 1)
+
+    def test_missing_tracker_ids_handled_safely(self) -> None:
+        # Two detections without track_id, and one detection with track_id=5
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0, timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=None)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1, timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="bus", confidence=0.8, bounding_box=self.box, track_id=None)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=2, timestamp_seconds=0.2,
+                detections=[DetectedObject(class_name="truck", confidence=0.85, bounding_box=self.box, track_id=5)],
+            ),
+        ]
+        processor = TrackletPostProcessor(min_track_lifespan_frames=1)
+        result = processor.process_frames(frames)
+
+        # Missing tracker IDs must NOT be grouped into a single tracklet
+        self.assertEqual(len(result.tracklets), 1)
+        self.assertIn(5, result.tracklets)
+        self.assertEqual(result.summary.untracked_detections_count, 2)
+        self.assertEqual(result.summary.raw_total_tracked_ids, 1)
+
+        # Untracked detections must be preserved in post-processed frames
+        self.assertEqual(len(result.frames[0].detections), 1)
+        self.assertIsNone(result.frames[0].detections[0].track_id)
+        self.assertEqual(result.frames[0].detections[0].class_name, "car")
+        self.assertEqual(len(result.frames[1].detections), 1)
+        self.assertIsNone(result.frames[1].detections[0].track_id)
+        self.assertEqual(result.frames[1].detections[0].class_name, "bus")
+
+    def test_input_immutability(self) -> None:
+        det = DetectedObject(class_name="truck", confidence=0.75, bounding_box=self.box, track_id=10)
+        orig_frame = FrameDetectionResult.from_detections(frame_number=0, timestamp_seconds=0.0, detections=[det])
+        input_frames = [orig_frame]
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=1)
+        result = processor.process_frames(input_frames)
+
+        # Input objects must not be altered
+        self.assertEqual(orig_frame.detections[0].class_name, "truck")
+        self.assertEqual(orig_frame.detections[0].track_id, 10)
+        self.assertIsNot(input_frames[0], result.frames[0])
+
+    def test_repeated_frames_and_frame_indices(self) -> None:
+        # Two frame detection records with the same frame number
+        det = DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=7)
+        f1 = FrameDetectionResult.from_detections(frame_number=2, timestamp_seconds=0.066, detections=[det])
+        f2 = FrameDetectionResult.from_detections(frame_number=2, timestamp_seconds=0.066, detections=[det])
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=1)
+        result = processor.process_frames([f1, f2])
+
+        self.assertEqual(len(result.frames), 2)
+        self.assertEqual(result.tracklets[7].observed_frame_count, 1)
+        self.assertEqual(result.tracklets[7].detection_count, 2)
+
+    def test_invalid_min_lifespan_rejected(self) -> None:
+        with self.assertRaises(ValueError) as context:
+            TrackletPostProcessor(min_track_lifespan_frames=0)
+        self.assertIn("must be at least 1", str(context.exception))
+
+    def test_post_processing_metric_conservation_enforced(self) -> None:
+        """Verify that PostProcessingSummary enforces mathematical conservation."""
+        with self.assertRaises(ValidationError) as ctx:
+            PostProcessingSummary(
+                raw_total_detections=10,
+                raw_total_tracked_ids=2,
+                raw_class_counts={"car": 10},
+                raw_tracked_id_counts={"car": 2},
+                raw_class_switches_count=0,
+                processed_total_detections=8,  # 8 + 1 != 10 (violates detection conservation)
+                processed_total_tracked_ids=2,
+                processed_class_counts={"car": 8},
+                processed_tracked_id_counts={"car": 2},
+                min_track_lifespan_frames=5,
+                filtered_tracks_count=0,
+                filtered_detections_count=1,
+                untracked_detections_count=0,
+                resolved_class_switches_count=0,
+            )
+        self.assertIn("raw_total_detections", str(ctx.exception))
+
+    def test_identity_switches_not_falsely_claimed_as_resolved(self) -> None:
+        """Demonstrate that fragmented tracklets remain distinct tracklets after post-processing."""
+        frames = []
+        for fn in range(5):
+            frames.append(
+                FrameDetectionResult.from_detections(
+                    frame_number=fn,
+                    timestamp_seconds=fn * 0.1,
+                    detections=[DetectedObject(class_name="bus", confidence=0.9, bounding_box=self.box, track_id=2)],
+                )
+            )
+        for fn in range(10, 15):
+            frames.append(
+                FrameDetectionResult.from_detections(
+                    frame_number=fn,
+                    timestamp_seconds=fn * 0.1,
+                    detections=[DetectedObject(class_name="bus", confidence=0.9, bounding_box=self.box, track_id=19)],
+                )
+            )
+
+        processor = TrackletPostProcessor(min_track_lifespan_frames=3)
+        result = processor.process_frames(frames)
+
+        # Track 2 and Track 19 must NOT be merged; they remain 2 separate tracklets
+        self.assertEqual(len(result.tracklets), 2)
+        self.assertIn(2, result.tracklets)
+        self.assertIn(19, result.tracklets)
+        self.assertEqual(result.summary.processed_total_tracked_ids, 2)
+        # Identity switch is NOT resolved (only label smoothing within a single tracklet is performed)
+        self.assertEqual(result.summary.resolved_class_switches_count, 0)
+
+
+class TestPipelineEvaluation(unittest.TestCase):
+    """Unit tests for offline pipeline evaluation script and reporting."""
+
+    def setUp(self) -> None:
+        self.box = BoundingBox(x_min=10.0, y_min=20.0, x_max=60.0, y_max=80.0)
+
+    def test_evaluate_frames_basic(self) -> None:
+        frames = []
+        for fn in range(5):
+            frames.append(
+                FrameDetectionResult.from_detections(
+                    frame_number=fn,
+                    timestamp_seconds=fn * 0.1,
+                    detections=[
+                        DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=1),
+                        DetectedObject(class_name="bus", confidence=0.85, bounding_box=self.box, track_id=2),
+                    ],
+                )
+            )
+
+        report = evaluate_frames(
+            frame_results=frames,
+            video_metadata={"video_name": "test_video.mp4", "frame_count": 50, "fps": 25.0},
+            min_track_lifespan_frames=3,
+        )
+
+        self.assertIsInstance(report, PipelineEvaluationReport)
+        self.assertEqual(report.video_name, "test_video.mp4")
+        self.assertEqual(report.total_frames_in_video, 50)
+        self.assertEqual(report.processed_frames, 5)
+        self.assertEqual(report.raw_total_detections, 10)
+        self.assertEqual(report.processed_total_detections, 10)
+        self.assertEqual(report.raw_total_tracked_ids, 2)
+        self.assertEqual(report.processed_total_tracked_ids, 2)
+        self.assertEqual(report.filtered_tracks_count, 0)
+        self.assertEqual(len(report.tracklets), 2)
+        self.assertEqual(report.raw_track_observed_frames, {1: 5, 2: 5})
+        self.assertEqual(len(report.reclassified_detections), 0)
+
+    def test_evaluate_frames_with_class_switch_and_filtering(self) -> None:
+        frames = []
+        # Track 10: 4 frames "car", 1 frame "truck" -> majority "car" (retained)
+        # Track 20: 2 frames "motorcycle" -> filtered (< 5 frames)
+        for fn in range(4):
+            dets = [
+                DetectedObject(class_name="car", confidence=0.90, bounding_box=self.box, track_id=10),
+            ]
+            if fn < 2:
+                dets.append(
+                    DetectedObject(class_name="motorcycle", confidence=0.75, bounding_box=self.box, track_id=20)
+                )
+            frames.append(
+                FrameDetectionResult.from_detections(frame_number=fn, timestamp_seconds=fn * 0.1, detections=dets)
+            )
+
+        # Frame 4 has class switch for Track 10 to "truck"
+        frames.append(
+            FrameDetectionResult.from_detections(
+                frame_number=4,
+                timestamp_seconds=0.4,
+                detections=[
+                    DetectedObject(class_name="truck", confidence=0.70, bounding_box=self.box, track_id=10),
+                ],
+            )
+        )
+
+        report = evaluate_frames(
+            frame_results=frames,
+            min_track_lifespan_frames=5,
+        )
+
+        self.assertEqual(report.filtered_tracks_count, 1)
+        self.assertEqual(report.filtered_track_ids, [20])
+        self.assertEqual(report.filtered_detections_count, 2)
+        self.assertEqual(report.raw_class_switches_count, 1)
+        self.assertEqual(report.resolved_class_switches_count, 1)
+
+        # Frame 4 detection for track 10 should be reclassified
+        self.assertEqual(len(report.reclassified_detections), 1)
+        reclass = report.reclassified_detections[0]
+        self.assertEqual(reclass.frame_number, 4)
+        self.assertEqual(reclass.track_id, 10)
+        self.assertEqual(reclass.raw_class, "truck")
+        self.assertEqual(reclass.assigned_class, "car")
+
+        # Track 10 in tracklets list
+        t10 = next(t for t in report.tracklets if t.track_id == 10)
+        self.assertEqual(t10.assigned_class, "car")
+        self.assertFalse(t10.is_filtered)
+        self.assertTrue(t10.has_class_switch)
+
+        # Track 20 in tracklets list
+        t20 = next(t for t in report.tracklets if t.track_id == 20)
+        self.assertTrue(t20.is_filtered)
+
+    def test_format_evaluation_report(self) -> None:
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=1)],
+            )
+        ]
+        report = evaluate_frames(frames, min_track_lifespan_frames=1)
+        text = format_evaluation_report(report)
+
+        self.assertIn("ACCESSROUTE COMPUTER-VISION PIPELINE EVALUATION REPORT", text)
+        self.assertIn("1. EXECUTIVE COMPARISON SUMMARY", text)
+        self.assertIn("2. RAW TRACKER IDS & OBSERVED FRAME COUNTS", text)
+        self.assertIn("3. TRACKLET POST-PROCESSING & FILTERING DETAILS", text)
+        self.assertIn("4. TEMPORAL MAJORITY VOTING & LABEL SMOOTHING", text)
+        self.assertIn("5. METRIC DEFINITIONS & EDUCATIONAL GUIDE", text)
+        self.assertIn("6. RESEARCH LIMITATIONS & ACADEMIC NON-CLAIMS", text)
+        self.assertIn("Identity Switches NOT Corrected", text)
+        self.assertIn("ground-truth verification", text)
+        self.assertNotIn("tracker ID 19", text)
+        self.assertNotIn("Comparing 1,631 detection events", text)
+
+    def test_format_evaluation_report_no_unverified_identity_claims(self) -> None:
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[
+                    DetectedObject(class_name="car", confidence=0.8, bounding_box=self.box, track_id=2),
+                    DetectedObject(class_name="bus", confidence=0.9, bounding_box=self.box, track_id=18),
+                ],
+            )
+        ]
+        report = evaluate_frames(frames, min_track_lifespan_frames=1)
+        text = format_evaluation_report(report)
+        self.assertNotIn("ID 2 and tracker ID 19", text)
+        self.assertIn("ground-truth verification", text)
+
+    def test_evaluate_video_file_not_found(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            evaluate_video("non_existent_sample_video_path.mp4")
+
+    def test_evaluate_video_invalid_max_frames(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            evaluate_video(__file__, max_frames=0)
+        self.assertIn("must be at least 1", str(ctx.exception))
+
+    def test_build_arg_parser_and_defaults(self) -> None:
+        parser = build_arg_parser()
+        args = parser.parse_args(["--video-path", "sample.mp4"])
+        self.assertEqual(args.video_path, "sample.mp4")
+        self.assertIsNone(args.max_frames)
+        self.assertEqual(args.min_lifespan, DEFAULT_MIN_TRACK_LIFESPAN_FRAMES)
+        self.assertEqual(args.conf, 0.50)
+        self.assertEqual(args.iou, 0.30)
+        self.assertEqual(args.tracker, "bytetrack.yaml")
+
+        # Test explicit max_frames parsing
+        sample_args = parser.parse_args(["--video-path", "sample.mp4", "--max-frames", "30"])
+        self.assertEqual(sample_args.max_frames, 30)
+
+    def test_cli_main_missing_required_arg(self) -> None:
+        with patch("sys.stderr"):
+            with self.assertRaises(SystemExit) as ctx:
+                eval_main([])
+        self.assertNotEqual(ctx.exception.code, 0)
+
+    def test_evaluate_video_empty_path(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            evaluate_video("")
+        self.assertIn("must not be empty", str(ctx.exception))
+
+    def test_evaluate_video_invalid_conf(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            evaluate_video(__file__, conf=-0.1)
+        self.assertIn("conf must be between", str(ctx.exception))
+
+    def test_evaluate_video_invalid_iou(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            evaluate_video(__file__, iou=1.5)
+        self.assertIn("iou must be between", str(ctx.exception))
+
+    def test_format_evaluation_report_with_filtered_class_switch(self) -> None:
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.8, bounding_box=self.box, track_id=10)],
+            ),
+            FrameDetectionResult.from_detections(
+                frame_number=1,
+                timestamp_seconds=0.1,
+                detections=[DetectedObject(class_name="truck", confidence=0.7, bounding_box=self.box, track_id=10)],
+            ),
+        ]
+        report = evaluate_frames(frames, min_track_lifespan_frames=5)
+        text = format_evaluation_report(report)
+        self.assertIn("pruned with short tracks", text)
+        self.assertIn("Track #10 [PRUNED / FILTERED]", text)
+
+    def test_save_evaluation_outputs_protection(self) -> None:
+        import tempfile
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=1)],
+            )
+        ]
+        report = evaluate_frames(frames, min_track_lifespan_frames=1)
+        text = format_evaluation_report(report)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            txt_file = Path(tmpdir) / "report.txt"
+            json_file = Path(tmpdir) / "report.json"
+
+            # 1. Normal save to new paths
+            saved_txt, saved_json = save_evaluation_outputs(
+                report=report,
+                formatted_report=text,
+                output_txt=txt_file,
+                output_json=json_file,
+                overwrite=False,
+            )
+            self.assertEqual(saved_txt, txt_file)
+            self.assertEqual(saved_json, json_file)
+            self.assertTrue(txt_file.exists())
+            self.assertTrue(json_file.exists())
+
+            # 2. Saving again without overwrite=True must raise FileExistsError
+            with self.assertRaises(FileExistsError):
+                save_evaluation_outputs(
+                    report=report,
+                    formatted_report=text,
+                    output_txt=txt_file,
+                    overwrite=False,
+                )
+
+            with self.assertRaises(FileExistsError):
+                save_evaluation_outputs(
+                    report=report,
+                    formatted_report=text,
+                    output_json=json_file,
+                    overwrite=False,
+                )
+
+            # 3. Saving with overwrite=True succeeds
+            saved_txt, saved_json = save_evaluation_outputs(
+                report=report,
+                formatted_report="Updated report",
+                output_txt=txt_file,
+                output_json=json_file,
+                overwrite=True,
+            )
+            self.assertEqual(txt_file.read_text(encoding="utf-8"), "Updated report")
+
+    @patch("backend.vision.evaluate_pipeline.evaluate_video")
+    def test_cli_main_success_flow(self, mock_eval_video: MagicMock) -> None:
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=1)],
+            )
+        ]
+        mock_report = evaluate_frames(frames, min_track_lifespan_frames=1)
+        mock_eval_video.return_value = mock_report
+
+        with patch("builtins.print"):
+            exit_code = eval_main(["--video-path", "mock_video.mp4"])
+        self.assertEqual(exit_code, 0)
+        mock_eval_video.assert_called_once()
+
+    @patch("backend.vision.evaluate_pipeline.evaluate_video")
+    def test_cli_main_file_exists_error(self, mock_eval_video: MagicMock) -> None:
+        import tempfile
+        frames = [
+            FrameDetectionResult.from_detections(
+                frame_number=0,
+                timestamp_seconds=0.0,
+                detections=[DetectedObject(class_name="car", confidence=0.9, bounding_box=self.box, track_id=1)],
+            )
+        ]
+        mock_report = evaluate_frames(frames, min_track_lifespan_frames=1)
+        mock_eval_video.return_value = mock_report
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            existing_file = Path(tmpdir) / "exists.txt"
+            existing_file.write_text("prior content", encoding="utf-8")
+
+            with patch("sys.stderr"), patch("builtins.print"):
+                exit_code = eval_main([
+                    "--video-path", "mock_video.mp4",
+                    "--output-txt", str(existing_file),
+                ])
+            # Exits with error code 1 when attempting to overwrite without --overwrite
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(existing_file.read_text(encoding="utf-8"), "prior content")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

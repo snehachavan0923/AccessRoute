@@ -6,11 +6,13 @@ import {
   ArrowRight,
   SlidersHorizontal,
   Loader2,
+  Video,
 } from 'lucide-react'
 import PlanningControls from './components/PlanningControls'
 import MobileDrawer from './components/MobileDrawer'
 import MapView from './components/map/MapView'
 import RouteResultCards from './components/RouteResultCards'
+import ComputerVisionSection from './components/vision/ComputerVisionSection'
 import { ELECTRONIC_CITY_DEFAULT_BOUNDS } from './components/map/mapConfig'
 import {
   calculateShortestRoute,
@@ -66,6 +68,7 @@ const PRESET_ROUTES = [
 ]
 
 export default function App() {
+  const [activeSection, setActiveSection] = useState('routes') // 'routes' | 'vision'
   const [origin, setOrigin] = useState(null)
   const [destination, setDestination] = useState(null)
   const [selectionTarget, setSelectionTarget] = useState('origin')
@@ -352,207 +355,261 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right Header: Badges & Controls */}
-          <div className="flex items-center gap-2">
-            {/* Status indicator */}
-            <div className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
-              <span
-                className={`h-2 w-2 rounded-full ${trafficInfo?.available
-                    ? 'bg-emerald-500 ring-2 ring-emerald-200'
-                    : 'bg-slate-400'
-                  }`}
-              />
-              <span className="hidden sm:inline">
-                {trafficInfo?.available
-                  ? 'Electronic City Traffic Active'
-                  : 'Traffic Data Offline'}
-              </span>
-              <span className="sm:hidden">
-                {trafficInfo?.available ? 'Traffic Active' : 'Offline'}
-              </span>
-            </div>
-
-            {/* Go to Electronic City button (Desktop) */}
-            <button
-              type="button"
-              onClick={handleGoToElectronicCity}
-              className="hidden md:flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
-            >
-              <Compass className="h-3.5 w-3.5 text-blue-600" />
-              <span>Go to Electronic City</span>
-            </button>
-
-            {/* Hamburger button (Mobile only) */}
+          {/* Section Navigation Switcher */}
+          <nav
+            className="flex items-center gap-1 bg-slate-100/90 p-1 rounded-xl border border-slate-200/60"
+            aria-label="Application Sections"
+          >
             <button
               type="button"
               onClick={() => {
-                setIsMobileDrawerOpen(true)
+                setActiveSection('routes')
                 invalidateMap()
               }}
-              className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 lg:hidden shadow-2xs"
-              aria-label="Open planning menu"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeSection === 'routes'
+                  ? 'bg-white text-blue-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
+              }`}
             >
-              <Menu className="h-4 w-4" />
-              {(origin || destination) && (
-                <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-600" />
-                </span>
-              )}
+              <Navigation className="h-3.5 w-3.5" />
+              <span>Route Planner</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSection('vision')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                activeSection === 'vision'
+                  ? 'bg-white text-blue-700 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/50'
+              }`}
+            >
+              <Video className="h-3.5 w-3.5" />
+              <span>Computer Vision</span>
+              <span className="rounded-full bg-emerald-100 text-emerald-800 px-1.5 py-0.2 text-[9px] font-extrabold uppercase hidden sm:inline-block">
+                YOLO
+              </span>
+            </button>
+          </nav>
+
+          {/* Right Header: Badges & Controls */}
+          <div className="flex items-center gap-2">
+            {activeSection === 'routes' ? (
+              <>
+                {/* Status indicator */}
+                <div className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      trafficInfo?.available
+                        ? 'bg-emerald-500 ring-2 ring-emerald-200'
+                        : 'bg-slate-400'
+                    }`}
+                  />
+                  <span className="hidden sm:inline">
+                    {trafficInfo?.available
+                      ? 'Electronic City Traffic Active'
+                      : 'Traffic Data Offline'}
+                  </span>
+                  <span className="sm:hidden">
+                    {trafficInfo?.available ? 'Traffic Active' : 'Offline'}
+                  </span>
+                </div>
+
+                {/* Go to Electronic City button (Desktop) */}
+                <button
+                  type="button"
+                  onClick={handleGoToElectronicCity}
+                  className="hidden md:flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                >
+                  <Compass className="h-3.5 w-3.5 text-blue-600" />
+                  <span>Go to Electronic City</span>
+                </button>
+
+                {/* Hamburger button (Mobile only) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileDrawerOpen(true)
+                    invalidateMap()
+                  }}
+                  className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 lg:hidden shadow-2xs"
+                  aria-label="Open planning menu"
+                >
+                  <Menu className="h-4 w-4" />
+                  {(origin || destination) && (
+                    <span className="absolute -top-1 -right-1 flex h-2.5 w-2.5">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-600" />
+                    </span>
+                  )}
+                </button>
+              </>
+            ) : (
+              <div className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-600">
+                <span className="h-2 w-2 rounded-full bg-emerald-500 ring-2 ring-emerald-200" />
+                <span>YOLOv11n + ByteTrack Ready</span>
+              </div>
+            )}
           </div>
         </div>
       </header>
 
       {/* Main Responsive Layout */}
       <main className="flex-1 mx-auto w-full max-w-7xl p-3 sm:p-5 lg:p-6 min-w-0 overflow-x-hidden">
-        {/* Desktop Layout: 2 Columns */}
-        <div className="hidden lg:grid lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
-          {/* Left Column: Planning Controls */}
-          <aside aria-label="Route Planning Controls">
-            <PlanningControls {...planningProps} />
-          </aside>
+        {activeSection === 'vision' ? (
+          <ComputerVisionSection />
+        ) : (
+          <>
+            {/* Desktop Layout: 2 Columns */}
+            <div className="hidden lg:grid lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
+              {/* Left Column: Planning Controls */}
+              <aside aria-label="Route Planning Controls">
+                <PlanningControls {...planningProps} />
+              </aside>
 
-          {/* Right Column: Map & Route Results */}
-          <section className="space-y-4 min-w-0" aria-label="Route Map and Analysis">
-            <MapView
-              origin={origin}
-              destination={destination}
-              route={route}
-              comparison={comparison}
-              electronicCityBounds={trafficInfo?.bounds}
-              manualCameraAction={manualCameraAction}
-              onLocationSelect={handleLocationSelectFromMap}
-              selectionTarget={selectionTarget}
-              onGoToElectronicCity={handleGoToElectronicCity}
-              onMapReady={(map) => {
-                mapInstanceRef.current = map
-              }}
-            />
+              {/* Right Column: Map & Route Results */}
+              <section className="space-y-4 min-w-0" aria-label="Route Map and Analysis">
+                <MapView
+                  origin={origin}
+                  destination={destination}
+                  route={route}
+                  comparison={comparison}
+                  electronicCityBounds={trafficInfo?.bounds}
+                  manualCameraAction={manualCameraAction}
+                  onLocationSelect={handleLocationSelectFromMap}
+                  selectionTarget={selectionTarget}
+                  onGoToElectronicCity={handleGoToElectronicCity}
+                  onMapReady={(map) => {
+                    mapInstanceRef.current = map
+                  }}
+                />
 
-            <RouteResultCards comparison={comparison} route={route} />
-          </section>
-        </div>
-
-        {/* Mobile / Tablet Map-First Layout (< lg) */}
-        <div className="lg:hidden space-y-3.5 max-w-full min-w-0">
-          {/* Map is at the TOP on mobile */}
-          <div className="max-w-full min-w-0 overflow-hidden rounded-2xl">
-            <MapView
-              origin={origin}
-              destination={destination}
-              route={route}
-              comparison={comparison}
-              electronicCityBounds={trafficInfo?.bounds}
-              manualCameraAction={manualCameraAction}
-              onLocationSelect={handleLocationSelectFromMap}
-              selectionTarget={selectionTarget}
-              onGoToElectronicCity={handleGoToElectronicCity}
-              onMapReady={(map) => {
-                mapInstanceRef.current = map
-              }}
-            />
-          </div>
-
-          {/* Mobile Endpoints Summary & Action Bar */}
-          <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs space-y-2.5 max-w-full min-w-0">
-            {/* Header: ENDPOINTS label and Change / Search shortcut */}
-            <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5 min-w-0">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-                Endpoints
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsMobileDrawerOpen(true)
-                  invalidateMap()
-                }}
-                className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700 active:underline"
-              >
-                <span>Edit / Search</span>
-                <SlidersHorizontal className="h-3 w-3" />
-              </button>
+                <RouteResultCards comparison={comparison} route={route} />
+              </section>
             </div>
 
-            {/* Endpoints display: Origin -> Destination clearly stacked & wrapping */}
-            <div
-              onClick={() => {
-                setIsMobileDrawerOpen(true)
-                invalidateMap()
-              }}
-              className="cursor-pointer rounded-lg bg-slate-50/80 p-2.5 transition-colors hover:bg-slate-100/80 active:bg-slate-100 max-w-full min-w-0"
-              title="Tap to change route endpoints"
-            >
-              <div className="flex flex-col gap-1.5 text-xs min-w-0">
-                {/* Origin */}
-                <div className="flex items-start gap-2 min-w-0">
-                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white mt-0.5">
-                    A
-                  </span>
-                  <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
-                    {origin ? origin.label : 'Select starting location (A)'}
-                  </span>
-                </div>
-
-                {/* Connecting arrow */}
-                <div className="flex items-center gap-2 pl-1 text-slate-400">
-                  <div className="h-2 w-0.5 bg-slate-300 ml-1 rounded-full" />
-                  <ArrowRight className="h-3 w-3 -ml-0.5 rotate-90 sm:rotate-0 text-slate-400" />
-                </div>
-
-                {/* Destination */}
-                <div className="flex items-start gap-2 min-w-0">
-                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold text-white mt-0.5">
-                    B
-                  </span>
-                  <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
-                    {destination ? destination.label : 'Select destination (B)'}
-                  </span>
-                </div>
+            {/* Mobile / Tablet Map-First Layout (< lg) */}
+            <div className="lg:hidden space-y-3.5 max-w-full min-w-0">
+              {/* Map is at the TOP on mobile */}
+              <div className="max-w-full min-w-0 overflow-hidden rounded-2xl">
+                <MapView
+                  origin={origin}
+                  destination={destination}
+                  route={route}
+                  comparison={comparison}
+                  electronicCityBounds={trafficInfo?.bounds}
+                  manualCameraAction={manualCameraAction}
+                  onLocationSelect={handleLocationSelectFromMap}
+                  selectionTarget={selectionTarget}
+                  onGoToElectronicCity={handleGoToElectronicCity}
+                  onMapReady={(map) => {
+                    mapInstanceRef.current = map
+                  }}
+                />
               </div>
+
+              {/* Mobile Endpoints Summary & Action Bar */}
+              <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs space-y-2.5 max-w-full min-w-0">
+                {/* Header: ENDPOINTS label and Change / Search shortcut */}
+                <div className="flex items-center justify-between gap-2 border-b border-slate-100 pb-1.5 min-w-0">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                    Endpoints
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsMobileDrawerOpen(true)
+                      invalidateMap()
+                    }}
+                    className="flex items-center gap-1 text-[11px] font-semibold text-blue-600 hover:text-blue-700 active:underline"
+                  >
+                    <span>Edit / Search</span>
+                    <SlidersHorizontal className="h-3 w-3" />
+                  </button>
+                </div>
+
+                {/* Endpoints display: Origin -> Destination clearly stacked & wrapping */}
+                <div
+                  onClick={() => {
+                    setIsMobileDrawerOpen(true)
+                    invalidateMap()
+                  }}
+                  className="cursor-pointer rounded-lg bg-slate-50/80 p-2.5 transition-colors hover:bg-slate-100/80 active:bg-slate-100 max-w-full min-w-0"
+                  title="Tap to change route endpoints"
+                >
+                  <div className="flex flex-col gap-1.5 text-xs min-w-0">
+                    {/* Origin */}
+                    <div className="flex items-start gap-2 min-w-0">
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white mt-0.5">
+                        A
+                      </span>
+                      <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
+                        {origin ? origin.label : 'Select starting location (A)'}
+                      </span>
+                    </div>
+
+                    {/* Connecting arrow */}
+                    <div className="flex items-center gap-2 pl-1 text-slate-400">
+                      <div className="h-2 w-0.5 bg-slate-300 ml-1 rounded-full" />
+                      <ArrowRight className="h-3 w-3 -ml-0.5 rotate-90 sm:rotate-0 text-slate-400" />
+                    </div>
+
+                    {/* Destination */}
+                    <div className="flex items-start gap-2 min-w-0">
+                      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold text-white mt-0.5">
+                        B
+                      </span>
+                      <span className="font-semibold text-slate-800 break-words min-w-0 flex-1 leading-snug">
+                        {destination ? destination.label : 'Select destination (B)'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Compare Routes Button - full width on mobile, comfortable touch target, completely visible */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (origin && destination) {
+                      handleFindAndCompare()
+                    } else {
+                      setIsMobileDrawerOpen(true)
+                      invalidateMap()
+                    }
+                  }}
+                  disabled={isCalculating}
+                  className="flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all cursor-pointer"
+                >
+                  {isCalculating && calculatingMode === 'compare' ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
+                      <span>Finding & comparing routes…</span>
+                    </>
+                  ) : isCalculating && calculatingMode === 'shortest' ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
+                      <span>Calculating shortest route…</span>
+                    </>
+                  ) : origin && destination ? (
+                    <>
+                      <span>Find and compare routes</span>
+                      <ArrowRight className="h-3.5 w-3.5 shrink-0" />
+                    </>
+                  ) : (
+                    <>
+                      <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
+                      <span>Set locations to compare</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {/* Route results immediately below map on mobile */}
+              <RouteResultCards comparison={comparison} route={route} />
             </div>
-
-            {/* Compare Routes Button - full width on mobile, comfortable touch target, completely visible */}
-            <button
-              type="button"
-              onClick={() => {
-                if (origin && destination) {
-                  handleFindAndCompare()
-                } else {
-                  setIsMobileDrawerOpen(true)
-                  invalidateMap()
-                }
-              }}
-              disabled={isCalculating}
-              className="flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all cursor-pointer"
-            >
-              {isCalculating && calculatingMode === 'compare' ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
-                  <span>Finding & comparing routes…</span>
-                </>
-              ) : isCalculating && calculatingMode === 'shortest' ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin-fast shrink-0" />
-                  <span>Calculating shortest route…</span>
-                </>
-              ) : origin && destination ? (
-                <>
-                  <span>Find and compare routes</span>
-                  <ArrowRight className="h-3.5 w-3.5 shrink-0" />
-                </>
-              ) : (
-                <>
-                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" />
-                  <span>Set locations to compare</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* Route results immediately below map on mobile */}
-          <RouteResultCards comparison={comparison} route={route} />
-        </div>
+          </>
+        )}
       </main>
 
       {/* Mobile Drawer (Slide-over sheet with controls) */}
@@ -563,6 +620,44 @@ export default function App() {
           invalidateMap()
         }}
       >
+        <div className="mb-4 pb-3 border-b border-slate-200">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-2">
+            Section Navigation
+          </span>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSection('routes')
+                setIsMobileDrawerOpen(false)
+                invalidateMap()
+              }}
+              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
+                activeSection === 'routes'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <Navigation className="h-3.5 w-3.5" />
+              <span>Route Planner</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveSection('vision')
+                setIsMobileDrawerOpen(false)
+              }}
+              className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg text-xs font-bold transition-all ${
+                activeSection === 'vision'
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <Video className="h-3.5 w-3.5" />
+              <span>Computer Vision</span>
+            </button>
+          </div>
+        </div>
         <PlanningControls {...planningProps} />
       </MobileDrawer>
     </div>

@@ -13,6 +13,7 @@ _load_env_file()
 from backend.api import router
 from backend.database.initialize import initialize_database
 from backend.routing.routes import router as routing_router
+from backend.vision.router import router as vision_router
 
 
 @asynccontextmanager
@@ -49,3 +50,4 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(routing_router)
+app.include_router(vision_router)
