@@ -10,4 +10,4 @@
  *   2. Start Vite with `VITE_ENABLE_TRAFFIC_IMPACT_TAB=true npm run dev`
  */
 export const ENABLE_TRAFFIC_IMPACT_TAB =
-  import.meta.env.VITE_ENABLE_TRAFFIC_IMPACT_TAB !== 'false'
+  import.meta.env.VITE_ENABLE_TRAFFIC_IMPACT_TAB === 'true' || false
