@@ -80,12 +80,14 @@ export default function App() {
   const [manualCameraAction, setManualCameraAction] = useState(null)
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false)
 
-  // Traffic settings
+  // Traffic & accessibility settings
   const [trafficInfo, setTrafficInfo] = useState(null)
   const [selectedTimestamp, setSelectedTimestamp] = useState('2026-01-01 08:30:00')
   const [trafficWeight, setTrafficWeight] = useState(2.0)
+  const [accessibilityMode, setAccessibilityMode] = useState('standard') // 'standard' | 'step_free'
 
   const requestController = useRef(null)
+
   const mapInstanceRef = useRef(null)
 
   // Fetch dataset info on mount
@@ -245,9 +247,10 @@ export default function App() {
       const result = await compareRoutes(
         { latitude: Number(origin.latitude), longitude: Number(origin.longitude) },
         { latitude: Number(destination.latitude), longitude: Number(destination.longitude) },
-        { timestamp: selectedTimestamp, trafficWeight },
+        { timestamp: selectedTimestamp, trafficWeight, accessibilityMode },
         controller.signal,
       )
+
 
       if (!controller.signal.aborted) {
         setComparison(result)
@@ -322,6 +325,8 @@ export default function App() {
     setSelectedTimestamp,
     trafficWeight,
     setTrafficWeight,
+    accessibilityMode,
+    setAccessibilityMode,
     trafficInfo,
     onFindAndCompare: handleFindAndCompare,
     onCalculateShortestOnly: handleCalculateShortestOnly,
@@ -458,9 +463,15 @@ export default function App() {
       {/* Main Responsive Layout */}
       <main className="flex-1 mx-auto w-full max-w-7xl p-3 sm:p-5 lg:p-6 min-w-0 overflow-x-hidden">
         {activeSection === 'vision' ? (
-          <ComputerVisionSection />
+          <ComputerVisionSection
+            onNavigateToPlanner={() => {
+              setActiveSection('routes')
+              invalidateMap()
+            }}
+          />
         ) : (
           <>
+
             {/* Desktop Layout: 2 Columns */}
             <div className="hidden lg:grid lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
               {/* Left Column: Planning Controls */}

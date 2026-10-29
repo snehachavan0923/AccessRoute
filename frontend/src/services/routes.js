@@ -10,7 +10,7 @@ export function calculateShortestRoute(origin, destination, signal) {
 }
 
 export function compareRoutes(origin, destination, options = {}, signal) {
-  const { timestamp, timeIndex, trafficWeight } = options
+  const { timestamp, timeIndex, trafficWeight, accessibilityMode } = options
   return apiRequest('/api/routes/compare', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -22,6 +22,7 @@ export function compareRoutes(origin, destination, options = {}, signal) {
         timeIndex !== undefined && timeIndex !== '' ? Number(timeIndex) : undefined,
       traffic_weight:
         trafficWeight !== undefined ? Number(trafficWeight) : 2.0,
+      accessibility_mode: accessibilityMode || 'standard',
     }),
     signal,
   })
@@ -33,6 +34,14 @@ export function getTrafficInfo(signal) {
     signal,
   })
 }
+
+export function getObservationStatus(signal) {
+  return apiRequest('/api/routes/observation-status', {
+    method: 'GET',
+    signal,
+  })
+}
+
 
 export function searchPlaces(query, signal) {
   const encoded = encodeURIComponent(query.trim())

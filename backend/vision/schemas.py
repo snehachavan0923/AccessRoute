@@ -27,7 +27,15 @@ class BoundingBox(BaseModel):
 
     @model_validator(mode="after")
     def validate_coordinates(self) -> BoundingBox:
-        """Require strictly positive width and height."""
+        """Require finite numeric coordinates and strictly positive width and height."""
+        if not (
+            math.isfinite(self.x_min)
+            and math.isfinite(self.y_min)
+            and math.isfinite(self.x_max)
+            and math.isfinite(self.y_max)
+        ):
+            raise ValueError("Bounding box coordinates must be finite numbers (NaN and Inf are rejected).")
+
         if self.x_max <= self.x_min:
             raise ValueError("x_max must be strictly greater than x_min.")
 

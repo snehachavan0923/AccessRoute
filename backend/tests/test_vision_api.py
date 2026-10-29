@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from backend.main import app
+from backend.traffic import get_default_vision_adapter, set_default_vision_adapter
 from backend.vision.schemas import BoundingBox, DetectedObject, FrameDetectionResult
 
 
@@ -17,11 +18,15 @@ class TestVisionAPI(unittest.TestCase):
     def setUp(self) -> None:
         self.client = TestClient(app)
 
+    def tearDown(self) -> None:
+        set_default_vision_adapter(None)
+
     def test_get_vision_status(self) -> None:
         """Verify GET /api/vision/status returns operational parameters and sample video info."""
         response = self.client.get("/api/vision/status")
         self.assertEqual(response.status_code, 200)
         data = response.json()
+
 
         self.assertIn("weights_available", data)
         self.assertIn("is_model_loaded", data)
@@ -256,3 +261,159 @@ class TestVisionAPI(unittest.TestCase):
             self.assertEqual(reclass["assigned_class"], "car")
             self.assertEqual(reclass["frame_number"], 3)
 
+    def test_analyze_video_publish_false_by_default(self) -> None:
+        """Verify publish_to_traffic_router defaults to False and traffic_publication is None."""
+        det = DetectedObject(
+            class_name="car",
+            confidence=0.88,
+            bounding_box=BoundingBox(x_min=10, y_min=20, x_max=100, y_max=200),
+            track_id=1,
+        )
+        mock_frames = [FrameDetectionResult.from_detections(i, float(i), [det]) for i in range(5)]
+
+        with patch("backend.vision.router._vision_service.process_video") as mock_proc, \
+             patch("backend.vision.router.annotate_video"):
+            mock_proc.return_value = (None, mock_frames)
+
+            response = self.client.post(
+                "/api/vision/analyze",
+                json={
+                    "video_id": "sample_traffic_video",
+                    "max_frames": 5,
+                    "generate_annotated_video": False,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertIsNone(data.get("traffic_publication"))
+
+    def test_analyze_video_publish_uncalibrated_returns_clear_explanation(self) -> None:
+        """Verify publishing an uncalibrated video fails cleanly with an explanatory message."""
+        det = DetectedObject(
+            class_name="car",
+            confidence=0.88,
+            bounding_box=BoundingBox(x_min=10, y_min=20, x_max=100, y_max=200),
+            track_id=1,
+        )
+        mock_frames = [FrameDetectionResult.from_detections(i, float(i), [det]) for i in range(5)]
+
+        with patch("backend.vision.router._vision_service.process_video") as mock_proc, \
+             patch("backend.vision.router.annotate_video"):
+            mock_proc.return_value = (None, mock_frames)
+
+            # Request publication without camera metadata
+            response = self.client.post(
+                "/api/vision/analyze",
+                json={
+                    "video_id": "sample_traffic_video",
+                    "max_frames": 5,
+                    "generate_annotated_video": False,
+                    "publish_to_traffic_router": True,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            pub = data.get("traffic_publication")
+            self.assertIsNotNone(pub)
+            self.assertFalse(pub["published"])
+            self.assertEqual(pub["status"], "uncalibrated_video")
+            self.assertIn("Calibrated camera-to-road mapping and a valid congestion estimate are required", pub["message"])
+
+            # Verify no observation was registered in the shared adapter
+            adapter = get_default_vision_adapter()
+            self.assertEqual(len(adapter), 0)
+
+    def test_analyze_video_publish_missing_congestion_estimate_returns_explanation(self) -> None:
+        """Verify calibrated camera without congestion estimate refuses to publish without error."""
+        det = DetectedObject(
+            class_name="car",
+            confidence=0.88,
+            bounding_box=BoundingBox(x_min=10, y_min=20, x_max=100, y_max=200),
+            track_id=1,
+        )
+        mock_frames = [FrameDetectionResult.from_detections(i, float(i), [det]) for i in range(5)]
+
+        with patch("backend.vision.router._vision_service.process_video") as mock_proc, \
+             patch("backend.vision.router.annotate_video"):
+            mock_proc.return_value = (None, mock_frames)
+
+            # Calibrated camera, but no explicit congestion index
+            response = self.client.post(
+                "/api/vision/analyze",
+                json={
+                    "video_id": "sample_traffic_video",
+                    "max_frames": 5,
+                    "generate_annotated_video": False,
+                    "publish_to_traffic_router": True,
+                    "camera_metadata": {
+                        "camera_id": "cam_ec_01",
+                        "latitude": 12.84,
+                        "longitude": 77.67,
+                        "heading_degrees": 90.0,
+                        "target_osm_u": 101,
+                        "target_osm_v": 102,
+                        "target_osm_key": 0,
+                        "is_spatially_calibrated": True,
+                    },
+                    "experimental_congestion_index": None,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            pub = data.get("traffic_publication")
+            self.assertIsNotNone(pub)
+            self.assertFalse(pub["published"])
+            self.assertEqual(pub["status"], "missing_congestion_estimate")
+            self.assertIn("Vehicle counts and tracking IDs cannot establish congestion levels alone", pub["message"])
+
+            adapter = get_default_vision_adapter()
+            self.assertEqual(len(adapter), 0)
+
+    def test_analyze_video_publish_valid_observation_ingested_in_adapter(self) -> None:
+        """Verify calibrated video with valid congestion index publishes observation to shared adapter."""
+        det = DetectedObject(
+            class_name="car",
+            confidence=0.88,
+            bounding_box=BoundingBox(x_min=10, y_min=20, x_max=100, y_max=200),
+            track_id=1,
+        )
+        mock_frames = [FrameDetectionResult.from_detections(i, float(i), [det]) for i in range(5)]
+
+        with patch("backend.vision.router._vision_service.process_video") as mock_proc, \
+             patch("backend.vision.router.annotate_video"):
+            mock_proc.return_value = (None, mock_frames)
+
+            response = self.client.post(
+                "/api/vision/analyze",
+                json={
+                    "video_id": "sample_traffic_video",
+                    "max_frames": 5,
+                    "generate_annotated_video": False,
+                    "publish_to_traffic_router": True,
+                    "camera_metadata": {
+                        "camera_id": "cam_ec_01",
+                        "latitude": 12.84,
+                        "longitude": 77.67,
+                        "heading_degrees": 90.0,
+                        "target_osm_u": 101,
+                        "target_osm_v": 102,
+                        "target_osm_key": 0,
+                        "is_spatially_calibrated": True,
+                    },
+                    "experimental_congestion_index": 0.85,
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            pub = data.get("traffic_publication")
+            self.assertIsNotNone(pub)
+            self.assertTrue(pub["published"])
+            self.assertEqual(pub["status"], "published")
+            self.assertEqual(pub["target_edge"], [101, 102, 0])
+            self.assertEqual(pub["congestion_index"], 0.85)
+
+            # Confirm shared adapter now has this observation
+            adapter = get_default_vision_adapter()
+            from backend.traffic import TrafficEdgeKey
+            edge_key = TrafficEdgeKey(osm_u=101, osm_v=102, key=0)
+            self.assertEqual(adapter.get_congestion_index(edge_key), 0.85)

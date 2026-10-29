@@ -12,6 +12,9 @@ DISCLAIMER AND LIMITATIONS:
    congestion from raw vehicle detection counts or tracker IDs. If an observation
    lacks an explicit, valid experimental congestion indicator, no vision congestion
    value is returned.
+4. In-Memory Registry Scope: The adapter registry is thread-safe within a single Python process
+   (guarded by a re-entrant lock). If deployed with multiple worker processes (e.g. uvicorn --workers N),
+   state is process-isolated unless backed by an external distributed store like Redis.
 """
 
 from __future__ import annotations
@@ -366,6 +369,21 @@ class VisionTrafficAdapter:
         with self._lock:
             return list(self._registry.keys())
 
+    def get_active_observations(
+        self,
+        current_time: datetime | None = None,
+    ) -> list[VisionEdgeObservation]:
+        """Return all observations that currently pass all safety and freshness validation checks."""
+        eval_time = self._resolve_eval_time(current_time)
+        with self._lock:
+            active: list[VisionEdgeObservation] = []
+            for key in self._registry:
+                obs = self.get_valid_observation(key, current_time=eval_time)
+                if obs is not None:
+                    active.append(obs)
+            return active
+
+
     def __len__(self) -> int:
         """Return total count of stored observations."""
         with self._lock:
@@ -382,3 +400,24 @@ class VisionTrafficAdapter:
                 "Naive datetime objects are rejected to prevent ambiguous comparisons."
             )
         return eval_time
+
+
+_default_vision_adapter: VisionTrafficAdapter | None = None
+_default_vision_adapter_lock = threading.Lock()
+
+
+def get_default_vision_adapter() -> VisionTrafficAdapter:
+    """Return the shared global VisionTrafficAdapter instance."""
+    global _default_vision_adapter
+    if _default_vision_adapter is None:
+        with _default_vision_adapter_lock:
+            if _default_vision_adapter is None:
+                _default_vision_adapter = VisionTrafficAdapter()
+    return _default_vision_adapter
+
+
+def set_default_vision_adapter(adapter: VisionTrafficAdapter | None) -> None:
+    """Set or reset the shared global VisionTrafficAdapter instance (primarily for testing and custom injection)."""
+    global _default_vision_adapter
+    with _default_vision_adapter_lock:
+        _default_vision_adapter = adapter

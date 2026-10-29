@@ -15,18 +15,20 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.traffic import get_default_vision_adapter
 from backend.vision.annotator import annotate_video
 from backend.vision.evaluate_pipeline import (
     DEFAULT_EVAL_MAX_FRAMES,
     PipelineEvaluationReport,
     evaluate_frames,
 )
+from backend.vision.observation_builder import build_vision_edge_observation
 from backend.vision.post_processor import (
     DEFAULT_MIN_TRACK_LIFESPAN_FRAMES,
     PostProcessedVideoResult,
     TrackletPostProcessor,
 )
-from backend.vision.schemas import VideoAnalysisSummary
+from backend.vision.schemas import CameraMetadata, VideoAnalysisSummary
 from backend.vision.service import (
     EXPECTED_WEIGHTS_PATH,
     TARGET_VEHICLE_CLASSES,
@@ -34,6 +36,7 @@ from backend.vision.service import (
 )
 
 logger = logging.getLogger(__name__)
+
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
@@ -87,6 +90,31 @@ class VisionStatusResponse(BaseModel):
     sample_videos: list[SampleVideoInfo]
 
 
+class TrafficPublicationStatus(BaseModel):
+    """Result of attempting to publish a video observation to the traffic routing engine."""
+
+    model_config = ConfigDict(frozen=True)
+
+    published: bool = Field(
+        default=False,
+        description="Whether an observation was registered with VisionTrafficAdapter",
+    )
+    status: str = Field(
+        description="Machine-readable publication status code",
+    )
+    message: str = Field(
+        description="Explanation of the publication outcome and requirements",
+    )
+    target_edge: list[int] | None = Field(
+        default=None,
+        description="OpenStreetMap directed edge [osm_u, osm_v, key] if identified",
+    )
+    congestion_index: float | None = Field(
+        default=None,
+        description="Experimental congestion index registered, if any",
+    )
+
+
 class AnalyzeVideoRequest(BaseModel):
     """Parameters for running computer vision analysis on a video."""
 
@@ -122,6 +150,20 @@ class AnalyzeVideoRequest(BaseModel):
         default=True,
         description="Whether to generate an annotated MP4 video with bounding boxes and track IDs",
     )
+    publish_to_traffic_router: bool = Field(
+        default=False,
+        description="Whether to attempt publishing the video observation to the shared VisionTrafficAdapter",
+    )
+    camera_metadata: CameraMetadata | None = Field(
+        default=None,
+        description="Optional camera metadata identifying target road edge and spatial calibration",
+    )
+    experimental_congestion_index: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional verified experimental congestion index. Must not be derived from counts alone.",
+    )
 
 
 class AnalyzeVideoResponse(BaseModel):
@@ -135,6 +177,10 @@ class AnalyzeVideoResponse(BaseModel):
     annotated_video_url: str | None = None
     source_video_url: str
     report: PipelineEvaluationReport
+    traffic_publication: TrafficPublicationStatus | None = Field(
+        default=None,
+        description="Status of publishing observation to VisionTrafficAdapter when requested",
+    )
 
 
 class VideoUploadResponse(BaseModel):
@@ -363,6 +409,12 @@ def analyze_video(request: AnalyzeVideoRequest) -> AnalyzeVideoResponse:
             )
 
         # 3. Post-process tracklets with temporal majority voting and lifespan filtering
+        post_processor = TrackletPostProcessor(
+            min_track_lifespan_frames=request.min_track_lifespan_frames,
+            filter_short_tracks=True,
+        )
+        processed_result: PostProcessedVideoResult = post_processor.process_frames(frame_results)
+
         report = evaluate_frames(
             frame_results=frame_results,
             video_metadata=metadata,
@@ -375,12 +427,6 @@ def analyze_video(request: AnalyzeVideoRequest) -> AnalyzeVideoResponse:
         # 4. Generate annotated video if requested
         annotated_video_url = None
         if request.generate_annotated_video:
-            post_processor = TrackletPostProcessor(
-                min_track_lifespan_frames=request.min_track_lifespan_frames,
-                filter_short_tracks=True,
-            )
-            processed_result: PostProcessedVideoResult = post_processor.process_frames(frame_results)
-
             output_annotated_path = ANNOTATED_CACHE_DIR / f"annotated_{job_id}.mp4"
             try:
                 annotate_video(
@@ -393,6 +439,73 @@ def analyze_video(request: AnalyzeVideoRequest) -> AnalyzeVideoResponse:
             except Exception as annot_err:
                 logger.warning("Failed to render annotated video: %s", annot_err)
                 # Soft failure: analysis report remains available even if video encoding fails
+
+        # 5. Handle publication to traffic router if requested
+        traffic_publication: TrafficPublicationStatus | None = None
+        if request.publish_to_traffic_router:
+            cam = request.camera_metadata
+            # Safeguard: Arbitrary or uncalibrated videos must not influence routing
+            if cam is None or not cam.is_spatially_calibrated:
+                target_edge_list = (
+                    [cam.target_osm_u, cam.target_osm_v, cam.target_osm_key]
+                    if cam and cam.target_osm_u and cam.target_osm_v
+                    else None
+                )
+                traffic_publication = TrafficPublicationStatus(
+                    published=False,
+                    status="uncalibrated_video",
+                    message=(
+                        "Calibrated camera-to-road mapping and a valid congestion estimate are required "
+                        "before video observations can influence pedestrian routing. This video is uncalibrated, "
+                        "so no observation was published to alter route costs."
+                    ),
+                    target_edge=target_edge_list,
+                    congestion_index=None,
+                )
+            elif request.experimental_congestion_index is None:
+                # Safeguard: Camera is calibrated, but no valid congestion model exists
+                # Congestion must NOT be derived from vehicle counts alone
+                traffic_publication = TrafficPublicationStatus(
+                    published=False,
+                    status="missing_congestion_estimate",
+                    message=(
+                        "Camera calibration is available, but no validated congestion estimate was provided. "
+                        "Vehicle counts and tracking IDs cannot establish congestion levels alone; "
+                        "no observation was published to alter route costs."
+                    ),
+                    target_edge=[cam.target_osm_u, cam.target_osm_v, cam.target_osm_key],
+                    congestion_index=None,
+                )
+            else:
+                # Validly calibrated camera with explicit congestion index
+                build_res = build_vision_edge_observation(
+                    processed_result=processed_result,
+                    camera_metadata=cam,
+                    experimental_congestion_index=request.experimental_congestion_index,
+                    duration_seconds=float(metadata.get("duration_seconds", 60.0)),
+                )
+                if build_res.success and build_res.observation:
+                    adapter = get_default_vision_adapter()
+                    adapter.set_observation(build_res.observation)
+                    traffic_publication = TrafficPublicationStatus(
+                        published=True,
+                        status="published",
+                        message="Successfully published validated vision observation to the shared traffic router.",
+                        target_edge=[
+                            build_res.observation.osm_u,
+                            build_res.observation.osm_v,
+                            build_res.observation.osm_key,
+                        ],
+                        congestion_index=build_res.observation.experimental_congestion_index,
+                    )
+                else:
+                    traffic_publication = TrafficPublicationStatus(
+                        published=False,
+                        status=build_res.status,
+                        message=build_res.message,
+                        target_edge=None,
+                        congestion_index=None,
+                    )
 
         t_end = time.time()
         elapsed = round(t_end - t_start, 2)
@@ -412,6 +525,7 @@ def analyze_video(request: AnalyzeVideoRequest) -> AnalyzeVideoResponse:
             annotated_video_url=annotated_video_url,
             source_video_url=source_video_url,
             report=report,
+            traffic_publication=traffic_publication,
         )
 
     except FileNotFoundError as err:

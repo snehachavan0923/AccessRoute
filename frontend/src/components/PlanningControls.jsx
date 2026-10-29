@@ -16,7 +16,10 @@ export default function PlanningControls({
   setSelectedTimestamp,
   trafficWeight,
   setTrafficWeight,
+  accessibilityMode,
+  setAccessibilityMode,
   trafficInfo,
+
   onFindAndCompare,
   onCalculateShortestOnly,
   isCalculating,
@@ -128,8 +131,15 @@ export default function PlanningControls({
           setComparison(null)
           setTrafficWeight(val)
         }}
+        accessibilityMode={accessibilityMode}
+        onAccessibilityModeChange={(val) => {
+          clearRouteRequest()
+          setComparison(null)
+          setAccessibilityMode(val)
+        }}
         presets={trafficInfo?.sample_presets}
       />
+
 
       {/* Error Notice */}
       {routeError && (

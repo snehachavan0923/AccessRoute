@@ -1,4 +1,4 @@
-import { Clock, Sliders } from 'lucide-react'
+import { Clock, Sliders, Footprints } from 'lucide-react'
 
 const TIME_PRESETS = [
   { id: 'morning', label: 'Morning Peak — 08:30 AM', timestamp: '2026-01-01 08:30:00' },
@@ -12,6 +12,8 @@ export default function TravelPreferences({
   onTimestampChange,
   trafficWeight,
   onTrafficWeightChange,
+  accessibilityMode = 'standard',
+  onAccessibilityModeChange,
   presets = TIME_PRESETS,
 }) {
   // Map numeric weight to the 3 required descriptions
@@ -29,6 +31,7 @@ export default function TravelPreferences({
         <Sliders className="h-4 w-4 text-slate-500" />
         <h3 className="text-xs font-semibold text-slate-800">Travel preferences</h3>
       </div>
+
 
       {/* When are you travelling? */}
       <div>
@@ -122,6 +125,43 @@ export default function TravelPreferences({
 
         <p className="text-[11px] text-slate-500 leading-relaxed">
           Higher settings may choose a longer route to reduce estimated congestion.
+        </p>
+      </div>
+
+      {/* Mobility & Accessibility Mode */}
+      <div className="space-y-1.5 pt-2 border-t border-slate-100">
+        <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+          <Footprints className="h-3.5 w-3.5 text-slate-400" />
+          <span>Mobility & Accessibility Mode</span>
+        </label>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            onClick={() => onAccessibilityModeChange?.('standard')}
+            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all cursor-pointer ${
+              accessibilityMode === 'standard'
+                ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold shadow-xs'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            Standard Walking
+          </button>
+          <button
+            type="button"
+            onClick={() => onAccessibilityModeChange?.('step_free')}
+            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all cursor-pointer ${
+              accessibilityMode === 'step_free'
+                ? 'border-purple-500 bg-purple-50 text-purple-700 font-semibold shadow-xs'
+                : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            Step-Free / Reduced
+          </button>
+        </div>
+        <p className="text-[10px] text-slate-500 leading-tight">
+          {accessibilityMode === 'step_free'
+            ? 'Avoids stairs and verified physical obstacles. Accessibility coverage is incomplete: missing obstacle information does not mean a route is accessible.'
+            : 'Standard pedestrian route. Stairs and ordinary footpaths are permitted.'}
         </p>
       </div>
     </div>

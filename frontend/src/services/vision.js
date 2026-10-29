@@ -25,10 +25,19 @@ export function analyzeVideo(payload, signal) {
           ? Number(payload.minTrackLifespanFrames)
           : 5,
       generate_annotated_video: payload.generateAnnotatedVideo ?? true,
+      publish_to_traffic_router: payload.publishToTrafficRouter ?? false,
+      camera_metadata: payload.cameraMetadata || undefined,
+      experimental_congestion_index:
+        payload.experimentalCongestionIndex !== undefined &&
+        payload.experimentalCongestionIndex !== null &&
+        payload.experimentalCongestionIndex !== ''
+          ? Number(payload.experimentalCongestionIndex)
+          : undefined,
     }),
     signal,
   })
 }
+
 
 export async function uploadVideo(file, signal) {
   const formData = new FormData()

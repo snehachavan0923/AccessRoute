@@ -17,6 +17,15 @@ class RouteCandidate:
     matched_traffic_edges_count: int = 0
     traffic_coverage_percent: float = 0.0
     average_congestion: float | None = None
+    traffic_source: str = "simulated"  # "simulated", "vision", "mixed", "none"
+    vision_matched_edges_count: int = 0
+    simulated_matched_edges_count: int = 0
+    steps_count: int = 0
+    unpaved_edges_count: int = 0
+    obstacles_count: int = 0
+    traffic_cost_penalty: float = 0.0
+    accessibility_cost_penalty: float = 0.0
+    accessibility_constraints_applied: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -33,6 +42,10 @@ class RouteComparison:
         "Traffic values are synthetically simulated for Electronic City, Bengaluru, "
         "and do not represent real-time sensor measurements or guaranteed pedestrian safety."
     )
+    primary_traffic_source: str = "simulated"  # "simulated", "vision", "mixed", "none"
+    vision_observation_active: bool = False
+    accessibility_mode: str = "standard"  # "standard" | "step_free"
+    explanation: str = ""
 
 
 @dataclass(frozen=True)
@@ -51,5 +64,5 @@ class RouteComparisonService(Protocol):
         timestamp: str | None = None,
         time_index: int | None = None,
         traffic_weight: float = 2.0,
+        accessibility_mode: str = "standard",
     ) -> RouteComparison: ...
-

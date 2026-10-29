@@ -4,11 +4,14 @@ import {
   Play,
   UploadCloud,
   FileVideo,
-  Sliders,
   Loader2,
   AlertCircle,
   Activity,
+  Video,
+  Radio,
+  SlidersHorizontal,
 } from 'lucide-react'
+
 import {
   analyzeVideo,
   getVisionStatus,
@@ -16,13 +19,23 @@ import {
 } from '../../services/vision'
 import VisionVideoPlayer from './VisionVideoPlayer'
 import VisionMetricsCards from './VisionMetricsCards'
+import VisionMotionSummary from './VisionMotionSummary'
 import VisionClassBreakdown from './VisionClassBreakdown'
 import VisionTrackletTable from './VisionTrackletTable'
 import VisionDisclaimer from './VisionDisclaimer'
+import VisionTrafficImpact from './VisionTrafficImpact'
+import { ENABLE_TRAFFIC_IMPACT_TAB } from '../../config/features'
 
-export default function ComputerVisionSection() {
+export default function ComputerVisionSection({
+  onNavigateToPlanner,
+  showTrafficImpactTab = ENABLE_TRAFFIC_IMPACT_TAB,
+}) {
   const [status, setStatus] = useState(null)
   const [statusLoading, setStatusLoading] = useState(true)
+
+  // Subsystem Tabs: 'analysis' (A), 'motion' (B), optional 'impact' (C, feature-flagged)
+  const [activeArea, setActiveArea] = useState('analysis')
+  const currentArea = !showTrafficImpactTab && activeArea === 'impact' ? 'analysis' : activeArea
 
   // Video Selection
   const [selectedVideoSource, setSelectedVideoSource] = useState('sample') // 'sample' | 'upload'
@@ -75,7 +88,7 @@ export default function ComputerVisionSection() {
       .then((res) => {
         setUploadedVideo(res)
         setSelectedVideoSource('upload')
-        setAnalysisResult(null)
+        setAnalysisResult(null) // Clears stale results on video change
         setAnalysisError('')
         setIsUploading(false)
       })
@@ -89,6 +102,7 @@ export default function ComputerVisionSection() {
     if (isAnalyzing) return
 
     setAnalysisError('')
+    setAnalysisResult(null)
     setIsAnalyzing(true)
     setAnalysisProgressText('Submitting video to YOLO detection pipeline…')
 
@@ -114,16 +128,16 @@ export default function ComputerVisionSection() {
       iou: iouThreshold,
       minTrackLifespanFrames: minLifespan,
       generateAnnotatedVideo: generateAnnotated,
+      publishToTrafficRouter: false, // Default: uncalibrated uploads do not alter routes
     }
 
-    // Step message updates for user feedback
     const progressTimer = setTimeout(() => {
       setAnalysisProgressText('Tracking vehicle trajectories with ByteTrack…')
     }, 1500)
 
     const postProcTimer = setTimeout(() => {
       setAnalysisProgressText(
-        'Post-processing tracklets & rendering annotated video…',
+        'Post-processing tracklets & analyzing motion displacement…',
       )
     }, 3500)
 
@@ -186,12 +200,12 @@ export default function ComputerVisionSection() {
           </div>
 
           <h2 className="text-xl sm:text-2xl font-black tracking-tight text-slate-900">
-            Real-Time Vehicle Detection & Tracklet Analysis
+            Real-Time Vehicle Detection & Motion Diagnostics
           </h2>
 
           <p className="text-xs sm:text-sm text-slate-600 leading-relaxed">
             Run real neural-network inference using local YOLO11n weights and ByteTrack multi-object tracking.
-            Evaluate raw detection events, trajectory lifespans, and temporal majority voting on actual traffic footage.
+            Evaluate raw detection events, trajectory lifespans, and image-plane motion displacement on traffic footage.
           </p>
         </div>
 
@@ -221,430 +235,479 @@ export default function ComputerVisionSection() {
         </div>
       </div>
 
-      {/* Main Grid: Controls & Source on Left, Player/Results on Right */}
-      <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
-        {/* Left Column: Video Input & Inference Options */}
-        <aside className="space-y-4" aria-label="Computer Vision Analysis Controls">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-xs space-y-4">
-            <div className="border-b border-slate-100 pb-2.5">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                1. Select Video Source
-              </h3>
-            </div>
-
-            {/* Source Switcher */}
-            <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedVideoSource('sample')
-                  if (analysisResult && analysisResult.video_id !== 'sample_traffic_video') {
-                    setAnalysisResult(null)
-                    setAnalysisError('')
-                  }
-                }}
-                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg transition-all ${
-                  selectedVideoSource === 'sample'
-                    ? 'bg-white text-blue-700 shadow-2xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <FileVideo className="h-4 w-4" />
-                <span>Sample Video</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedVideoSource('upload')
-                  if (analysisResult && analysisResult.video_id === 'sample_traffic_video') {
-                    setAnalysisResult(null)
-                    setAnalysisError('')
-                  }
-                }}
-                className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg transition-all ${
-                  selectedVideoSource === 'upload'
-                    ? 'bg-white text-blue-700 shadow-2xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <UploadCloud className="h-4 w-4" />
-                <span>Upload Video</span>
-              </button>
-            </div>
-
-            {/* Video Details Card */}
-            {selectedVideoSource === 'sample' ? (
-              <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3.5 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-blue-900">
-                    Electronic City Traffic Sample
-                  </span>
-                  <span className="rounded-full bg-blue-200/80 px-2 py-0.5 text-[10px] font-bold text-blue-800">
-                    Verified MP4
-                  </span>
-                </div>
-                <div className="grid grid-cols-2 gap-2 text-[11px] text-blue-950/80">
-                  <div>
-                    <span className="text-blue-700/80 block">Duration:</span>
-                    <strong className="font-semibold">{currentVideo.duration}</strong>
-                  </div>
-                  <div>
-                    <span className="text-blue-700/80 block">Frame Count:</span>
-                    <strong className="font-semibold">{currentVideo.frames} frames</strong>
-                  </div>
-                  <div>
-                    <span className="text-blue-700/80 block">Resolution:</span>
-                    <strong className="font-semibold">{currentVideo.resolution}</strong>
-                  </div>
-                  <div>
-                    <span className="text-blue-700/80 block">Framerate:</span>
-                    <strong className="font-semibold">{currentVideo.fps}</strong>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  accept=".mp4,.mov,.avi,.mkv,.webm"
-                  onChange={handleFileSelected}
-                  className="hidden"
-                />
-
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="cursor-pointer border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-4 text-center bg-slate-50/50 hover:bg-blue-50/30 transition-all"
-                >
-                  <div className="flex flex-col items-center gap-1.5">
-                    <UploadCloud className="h-8 w-8 text-blue-600" />
-                    <span className="text-xs font-semibold text-slate-700">
-                      Click to choose video file
-                    </span>
-                    <span className="text-[10px] text-slate-500">
-                      MP4, MOV, WebM (Max 50MB)
-                    </span>
-                  </div>
-                </div>
-
-                {isUploading && (
-                  <div className="flex items-center gap-2 text-xs text-blue-600 font-medium">
-                    <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                    <span>Uploading and validating video…</span>
-                  </div>
-                )}
-
-                {uploadError && (
-                  <div className="flex items-start gap-1.5 text-xs text-rose-600 bg-rose-50 p-2.5 rounded-lg border border-rose-200">
-                    <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                    <span>{uploadError}</span>
-                  </div>
-                )}
-
-                {uploadedVideo && (
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 space-y-1.5 text-xs">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-emerald-900 truncate">
-                        {uploadedVideo.filename}
-                      </span>
-                      <span className="rounded-full bg-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
-                        Ready
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-1 text-[11px] text-emerald-800">
-                      <span>{uploadedVideo.total_frames} frames</span>
-                      <span>{uploadedVideo.duration_seconds}s</span>
-                      <span>{uploadedVideo.width}x{uploadedVideo.height}</span>
-                      <span>{uploadedVideo.fps} FPS</span>
-                    </div>
-                  </div>
-                )}
-              </div>
+      {/* Logical Area Selector Tabs: Area A, Area B, Area C */}
+      <div className="border-b border-slate-200">
+        <nav className="flex space-x-2 sm:space-x-4" aria-label="Computer Vision Subsystems">
+          <button
+            type="button"
+            onClick={() => setActiveArea('analysis')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs sm:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+              currentArea === 'analysis'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+            }`}
+          >
+            <Video className="h-4 w-4" />
+            <span>A. Video Analysis</span>
+            {analysisResult && (
+              <span className="rounded-full bg-blue-100 text-blue-700 px-1.5 py-0.2 text-[10px]">
+                {analysisResult.report.total_vehicle_detections} dets
+              </span>
             )}
+          </button>
 
-            {/* Section 2: Analysis Options */}
-            <div className="border-t border-slate-100 pt-3 space-y-3">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                2. Evaluation Frame Span
-              </h3>
-
-              <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
-                <button
-                  type="button"
-                  onClick={() => setFrameMode('30')}
-                  className={`py-1.5 px-2 rounded-lg text-center transition-all ${
-                    frameMode === '30'
-                      ? 'bg-white text-blue-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                  title="30 frames (~1.5s execution) ideal for fast interactive verification"
-                >
-                  <span className="block text-xs font-bold">30 Frames</span>
-                  <span className="block text-[9px] text-slate-400 font-normal">
-                    Quick Sample
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setFrameMode('full')}
-                  className={`py-1.5 px-2 rounded-lg text-center transition-all ${
-                    frameMode === 'full'
-                      ? 'bg-white text-blue-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                  title="Processes all frames in video (~10-15s execution)"
-                >
-                  <span className="block text-xs font-bold">Full Video</span>
-                  <span className="block text-[9px] text-slate-400 font-normal">
-                    {currentVideo.frames} frames
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setFrameMode('custom')}
-                  className={`py-1.5 px-2 rounded-lg text-center transition-all ${
-                    frameMode === 'custom'
-                      ? 'bg-white text-blue-700 shadow-2xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <span className="block text-xs font-bold">Custom</span>
-                  <span className="block text-[9px] text-slate-400 font-normal">
-                    Configurable
-                  </span>
-                </button>
-              </div>
-
-              {frameMode === 'custom' && (
-                <div className="space-y-1">
-                  <div className="flex justify-between text-[11px] font-semibold text-slate-600">
-                    <span>Frame Count:</span>
-                    <span className="font-bold text-blue-700">{customFrames} frames</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="5"
-                    max={currentVideo.frames || 301}
-                    value={customFrames}
-                    onChange={(e) => setCustomFrames(Number(e.target.value))}
-                    className="w-full accent-blue-600"
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Advanced Hyperparameters Accordion */}
-            <div className="border-t border-slate-100 pt-2 space-y-2">
-              <button
-                type="button"
-                onClick={() => setShowAdvanced(!showAdvanced)}
-                className="flex items-center justify-between w-full text-xs font-semibold text-slate-600 hover:text-slate-900 py-1"
-              >
-                <span className="flex items-center gap-1.5">
-                  <Sliders className="h-3.5 w-3.5 text-slate-400" />
-                  <span>Pipeline Hyperparameters</span>
-                </span>
-                <span className="text-[11px] text-blue-600 font-medium">
-                  {showAdvanced ? 'Hide' : 'Configure'}
-                </span>
-              </button>
-
-              {showAdvanced && (
-                <div className="space-y-3 pt-2 text-xs bg-slate-50 p-3 rounded-xl border border-slate-200/70">
-                  {/* Confidence */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[11px] text-slate-600">
-                      <span>Detection Confidence (conf):</span>
-                      <span className="font-bold text-slate-800">{confThreshold.toFixed(2)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.10"
-                      max="0.90"
-                      step="0.05"
-                      value={confThreshold}
-                      onChange={(e) => setConfThreshold(Number(e.target.value))}
-                      className="w-full accent-blue-600"
-                    />
-                  </div>
-
-                  {/* IoU */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[11px] text-slate-600">
-                      <span>NMS / Association IoU:</span>
-                      <span className="font-bold text-slate-800">{iouThreshold.toFixed(2)}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="0.10"
-                      max="0.80"
-                      step="0.05"
-                      value={iouThreshold}
-                      onChange={(e) => setIouThreshold(Number(e.target.value))}
-                      className="w-full accent-blue-600"
-                    />
-                  </div>
-
-                  {/* Min track lifespan */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-[11px] text-slate-600">
-                      <span>Min Track Lifespan Frames:</span>
-                      <span className="font-bold text-slate-800">{minLifespan} frames</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="1"
-                      max="20"
-                      step="1"
-                      value={minLifespan}
-                      onChange={(e) => setMinLifespan(Number(e.target.value))}
-                      className="w-full accent-blue-600"
-                    />
-                    <span className="text-[10px] text-slate-400 block leading-tight">
-                      Tracks with observed frames &lt; threshold are pruned as noise.
-                    </span>
-                  </div>
-
-                  {/* Annotated Video Checkbox */}
-                  <label className="flex items-center gap-2 pt-1 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={generateAnnotated}
-                      onChange={(e) => setGenerateAnnotated(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 accent-blue-600"
-                    />
-                    <span className="text-[11px] font-medium text-slate-700">
-                      Render annotated video with bounding boxes & IDs
-                    </span>
-                  </label>
-                </div>
-              )}
-            </div>
-
-            {/* Error Message */}
-            {analysisError && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
-                <div className="flex-1">
-                  <span className="font-bold block">Analysis Failed</span>
-                  <span>{analysisError}</span>
-                </div>
-              </div>
+          <button
+            type="button"
+            onClick={() => setActiveArea('motion')}
+            className={`flex items-center gap-2 pb-3 px-3 text-xs sm:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+              currentArea === 'motion'
+                ? 'border-blue-600 text-blue-600'
+                : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+            }`}
+          >
+            <Activity className="h-4 w-4" />
+            <span>B. Motion Diagnostics</span>
+            {analysisResult?.report?.motion_summary && (
+              <span className="rounded-full bg-emerald-100 text-emerald-800 px-1.5 py-0.2 text-[10px]">
+                {analysisResult.report.motion_summary.total_evaluated_tracks} tracks
+              </span>
             )}
+          </button>
 
-            {/* Main Action Button */}
+          {showTrafficImpactTab && (
             <button
               type="button"
-              onClick={handleRunAnalysis}
-              disabled={isAnalyzing || !status?.weights_available}
-              className="flex w-full min-h-[46px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all cursor-pointer"
+              onClick={() => setActiveArea('impact')}
+              className={`flex items-center gap-2 pb-3 px-3 text-xs sm:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+                currentArea === 'impact'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
+              }`}
             >
-              {isAnalyzing ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                  <span>Analyzing Video…</span>
-                </>
-              ) : (
-                <>
-                  <Play className="h-4 w-4 fill-current shrink-0" />
-                  <span>Run Computer Vision Analysis</span>
-                </>
-              )}
+              <Radio className="h-4 w-4" />
+              <span>C. Traffic & Route Impact</span>
+              <span className="rounded-full bg-slate-100 text-slate-600 px-1.5 py-0.2 text-[10px]">
+                Safeguards
+              </span>
             </button>
+          )}
+        </nav>
+      </div>
 
-            {/* Progress status notice while analyzing */}
-            {isAnalyzing && (
-              <div className="rounded-xl border border-blue-100 bg-blue-50/80 p-3 text-xs text-blue-800 space-y-1">
-                <div className="flex items-center gap-2 font-semibold">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600 shrink-0" />
-                  <span>{analysisProgressText || 'Processing frames with YOLO11n…'}</span>
+      {/* AREA A: Video Analysis */}
+      {currentArea === 'analysis' && (
+        <div className="grid grid-cols-1 lg:grid-cols-[380px_1fr] xl:grid-cols-[410px_1fr] gap-6 items-start">
+          {/* Left Column: Video Input & Inference Options */}
+          <aside className="space-y-4" aria-label="Computer Vision Analysis Controls">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5 shadow-xs space-y-4">
+              <div className="border-b border-slate-100 pb-2.5">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  1. Select Video Source
+                </h3>
+              </div>
+
+              {/* Source Switcher */}
+              <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedVideoSource !== 'sample') {
+                      setSelectedVideoSource('sample')
+                      setAnalysisResult(null)
+                      setAnalysisError('')
+                    }
+                  }}
+                  className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg transition-all cursor-pointer ${
+                    selectedVideoSource === 'sample'
+                      ? 'bg-white text-blue-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <FileVideo className="h-4 w-4" />
+                  <span>Sample Video</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (selectedVideoSource !== 'upload') {
+                      setSelectedVideoSource('upload')
+                      setAnalysisResult(null)
+                      setAnalysisError('')
+                    }
+                  }}
+                  className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg transition-all cursor-pointer ${
+                    selectedVideoSource === 'upload'
+                      ? 'bg-white text-blue-700 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <UploadCloud className="h-4 w-4" />
+                  <span>Upload Video</span>
+                </button>
+              </div>
+
+              {/* Video Details Card */}
+              {selectedVideoSource === 'sample' ? (
+                <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3.5 space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-blue-900">{currentVideo.name}</span>
+                    <span className="rounded bg-blue-200/60 px-1.5 py-0.5 text-[10px] font-bold text-blue-800">
+                      Sample Asset
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px] text-blue-900/80">
+                    <div>Duration: <strong>{currentVideo.duration}</strong></div>
+                    <div>Frames: <strong>{currentVideo.frames}</strong></div>
+                    <div>Resolution: <strong>{currentVideo.resolution}</strong></div>
+                    <div>Frame Rate: <strong>{currentVideo.fps}</strong></div>
+                  </div>
                 </div>
-                <span className="text-[10px] text-blue-600 block">
-                  Executing real inference on backend. UI remains fully responsive.
-                </span>
+              ) : (
+                <div className="space-y-2.5">
+                  <div
+                    onClick={() => fileInputRef.current?.click()}
+                    className="border-2 border-dashed border-slate-300 hover:border-blue-400 bg-slate-50 hover:bg-blue-50/30 rounded-xl p-4 text-center cursor-pointer transition-colors space-y-1.5"
+                  >
+                    <UploadCloud className="h-6 w-6 text-slate-400 mx-auto" />
+                    <span className="text-xs font-semibold text-slate-700 block">
+                      {isUploading ? 'Uploading Video…' : 'Click to Upload MP4 / MOV Video'}
+                    </span>
+                    <span className="text-[10px] text-slate-400 block">
+                      Max file size: 50 MB
+                    </span>
+                  </div>
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/mp4,video/quicktime,video/x-matroska,video/webm"
+                    onChange={handleFileSelected}
+                    className="hidden"
+                  />
+
+                  {uploadError && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700 flex items-start gap-1.5">
+                      <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5 text-rose-600" />
+                      <span>{uploadError}</span>
+                    </div>
+                  )}
+
+                  {uploadedVideo && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-3 text-xs text-emerald-950 space-y-1">
+                      <span className="font-bold block truncate">{uploadedVideo.filename}</span>
+                      <div className="grid grid-cols-2 gap-1 text-[11px] text-emerald-900">
+                        <div>Duration: <strong>{uploadedVideo.duration_seconds}s</strong></div>
+                        <div>Frames: <strong>{uploadedVideo.total_frames}</strong></div>
+                        <div>Resolution: <strong>{uploadedVideo.width}x{uploadedVideo.height}</strong></div>
+                        <div>FPS: <strong>{uploadedVideo.fps}</strong></div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 2. Select Evaluation Frame-Span */}
+              <div className="border-t border-slate-100 pt-3 space-y-2.5">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  2. Evaluation Frame-Span
+                </h3>
+
+                <div className="grid grid-cols-3 gap-1.5 text-xs font-semibold">
+                  <button
+                    type="button"
+                    onClick={() => setFrameMode('30')}
+                    className={`py-2 px-2 text-center rounded-lg border transition-all cursor-pointer ${
+                      frameMode === '30'
+                        ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Quick (30f)
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFrameMode('full')}
+                    className={`py-2 px-2 text-center rounded-lg border transition-all cursor-pointer ${
+                      frameMode === 'full'
+                        ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Full Video
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setFrameMode('custom')}
+                    className={`py-2 px-2 text-center rounded-lg border transition-all cursor-pointer ${
+                      frameMode === 'custom'
+                        ? 'border-blue-600 bg-blue-50 text-blue-700 font-bold shadow-2xs'
+                        : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {frameMode === 'custom' && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <label htmlFor="custom-frames-input" className="text-xs text-slate-600 whitespace-nowrap">
+                      Max Frames:
+                    </label>
+                    <input
+                      id="custom-frames-input"
+                      type="number"
+                      min={1}
+                      max={currentVideo.frames || 600}
+                      value={customFrames}
+                      onChange={(e) => setCustomFrames(Number(e.target.value))}
+                      className="w-full rounded-lg border border-slate-200 py-1 px-2 text-xs font-semibold text-slate-800"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Advanced Parameters Toggle */}
+              <div className="border-t border-slate-100 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvanced(!showAdvanced)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>{showAdvanced ? 'Hide Advanced Settings' : 'Advanced Detection Settings'}</span>
+                </button>
+
+                {showAdvanced && (
+                  <div className="pt-3 space-y-3">
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-600">
+                        <span>Confidence Threshold:</span>
+                        <span className="font-bold text-slate-800">{confThreshold.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.10"
+                        max="0.90"
+                        step="0.05"
+                        value={confThreshold}
+                        onChange={(e) => setConfThreshold(Number(e.target.value))}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-600">
+                        <span>NMS IoU Threshold:</span>
+                        <span className="font-bold text-slate-800">{iouThreshold.toFixed(2)}</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.10"
+                        max="0.80"
+                        step="0.05"
+                        value={iouThreshold}
+                        onChange={(e) => setIouThreshold(Number(e.target.value))}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px] text-slate-600">
+                        <span>Min Track Lifespan:</span>
+                        <span className="font-bold text-slate-800">{minLifespan} frames</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="20"
+                        step="1"
+                        value={minLifespan}
+                        onChange={(e) => setMinLifespan(Number(e.target.value))}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+
+                    <label className="flex items-center gap-2 pt-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={generateAnnotated}
+                        onChange={(e) => setGenerateAnnotated(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-blue-600 accent-blue-600"
+                      />
+                      <span className="text-[11px] font-medium text-slate-700">
+                        Render annotated video with bounding boxes & IDs
+                      </span>
+                    </label>
+                  </div>
+                )}
+              </div>
+
+              {/* Error Message */}
+              {analysisError && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 text-rose-600" />
+                  <div className="flex-1">
+                    <span className="font-bold block">Analysis Failed</span>
+                    <span>{analysisError}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Run Action Button */}
+              <button
+                type="button"
+                onClick={handleRunAnalysis}
+                disabled={isAnalyzing || !status?.weights_available}
+                className="flex w-full min-h-[46px] items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-blue-700 active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none transition-all cursor-pointer"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin shrink-0" />
+                    <span>Analyzing Video…</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 fill-current shrink-0" />
+                    <span>Run Computer Vision Analysis</span>
+                  </>
+                )}
+              </button>
+
+              {isAnalyzing && (
+                <div className="rounded-xl border border-blue-100 bg-blue-50/80 p-3 text-xs text-blue-800 space-y-1">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-blue-600 shrink-0" />
+                    <span>{analysisProgressText || 'Processing frames with YOLO11n…'}</span>
+                  </div>
+                  <span className="text-[10px] text-blue-600 block">
+                    Executing real inference on backend. UI remains fully responsive.
+                  </span>
+                </div>
+              )}
+            </div>
+          </aside>
+
+          {/* Right Column: Player & Compact Detection Summary */}
+          <section className="space-y-5 min-w-0" aria-label="Computer Vision Video and Results">
+            {/* Video Player */}
+            <VisionVideoPlayer
+              sourceVideoUrl={
+                analysisResult
+                  ? analysisResult.source_video_url
+                  : currentVideo.previewUrl
+              }
+              annotatedVideoUrl={analysisResult?.annotated_video_url}
+              metadata={
+                analysisResult
+                  ? {
+                      video_name: analysisResult.report.video_name,
+                      video_fps: analysisResult.report.video_fps,
+                      video_duration_seconds: analysisResult.report.video_duration_seconds,
+                      total_frames_in_video: analysisResult.report.total_frames_in_video,
+                      width: analysisResult.video_width || 640,
+                      height: analysisResult.video_height || 360,
+                    }
+                  : {
+                      video_name: currentVideo.name,
+                      video_fps: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.fps : sampleInfo?.fps || 29.97,
+                      video_duration_seconds: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.duration_seconds : sampleInfo?.duration_seconds || 10.04,
+                      total_frames_in_video: currentVideo.frames,
+                      width: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.width : sampleInfo?.width || 640,
+                      height: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.height : sampleInfo?.height || 360,
+                    }
+              }
+              processedFrames={
+                analysisResult?.report?.processed_frames ||
+                (frameMode === '30' ? 30 : currentVideo.frames)
+              }
+            />
+
+            {/* Compact Detection & Tracking Summary */}
+            {analysisResult ? (
+              <div className="space-y-4">
+                <VisionMetricsCards
+                  report={analysisResult.report}
+                  processingTime={analysisResult.processing_time_seconds}
+                />
+                <VisionClassBreakdown report={analysisResult.report} />
+                <VisionDisclaimer disclaimer={analysisResult.report.disclaimer} />
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-8 text-center space-y-3">
+                <div className="flex h-12 w-12 mx-auto items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-2xs">
+                  <Activity className="h-6 w-6" />
+                </div>
+                <div className="max-w-md mx-auto space-y-1">
+                  <h4 className="text-sm font-bold text-slate-800">
+                    Ready for Real YOLO Inference
+                  </h4>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    Select a frame count (e.g. Quick 30 frames for fast sample or Full Video) and click{' '}
+                    <strong>&quot;Run Computer Vision Analysis&quot;</strong> to evaluate vehicle detection and multi-object tracking.
+                  </p>
+                </div>
               </div>
             )}
-          </div>
-        </aside>
+          </section>
+        </div>
+      )}
 
-        {/* Right Column: Player & Analysis Results */}
-        <section className="space-y-5 min-w-0" aria-label="Computer Vision Video and Results">
-          {/* Video Player */}
-          <VisionVideoPlayer
-            sourceVideoUrl={
-              analysisResult
-                ? analysisResult.source_video_url
-                : currentVideo.previewUrl
-            }
-            annotatedVideoUrl={analysisResult?.annotated_video_url}
-            metadata={
-              analysisResult
-                ? {
-                    video_name: analysisResult.report.video_name,
-                    video_fps: analysisResult.report.video_fps,
-                    video_duration_seconds: analysisResult.report.video_duration_seconds,
-                    total_frames_in_video: analysisResult.report.total_frames_in_video,
-                    width: analysisResult.video_width || (selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.width : sampleInfo?.width || 640),
-                    height: analysisResult.video_height || (selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.height : sampleInfo?.height || 360),
-                  }
-                : {
-                    video_name: currentVideo.name,
-                    video_fps: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.fps : sampleInfo?.fps || 29.97,
-                    video_duration_seconds: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.duration_seconds : sampleInfo?.duration_seconds || 10.04,
-                    total_frames_in_video: currentVideo.frames,
-                    width: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.width : sampleInfo?.width || 640,
-                    height: selectedVideoSource === 'upload' && uploadedVideo ? uploadedVideo.height : sampleInfo?.height || 360,
-                  }
-            }
-            processedFrames={
-              analysisResult?.report?.processed_frames ||
-              (frameMode === '30' ? 30 : currentVideo.frames)
-            }
-          />
-
-          {/* Results Display */}
+      {/* AREA B: Motion Diagnostics */}
+      {currentArea === 'motion' && (
+        <div className="space-y-5">
           {analysisResult ? (
-            <div className="space-y-5">
-              {/* Statistical Metrics Highlights */}
-              <VisionMetricsCards
-                report={analysisResult.report}
-                processingTime={analysisResult.processing_time_seconds}
+            <>
+              {/* Scene-Level Motion Diagnostics */}
+              <VisionMotionSummary
+                motionSummary={analysisResult.report?.motion_summary}
               />
 
-              {/* Per-Class Breakdown & Distribution */}
-              <VisionClassBreakdown report={analysisResult.report} />
-
-              {/* Detailed Tracklets Table */}
+              {/* Per-Track Displacement & Details */}
               <VisionTrackletTable
                 tracklets={analysisResult.report.tracklets}
                 reclassifiedDetections={analysisResult.report.reclassified_detections}
                 minLifespan={analysisResult.report.min_track_lifespan_frames}
               />
-
-              {/* About These Results & Disclaimers */}
-              <VisionDisclaimer disclaimer={analysisResult.report.disclaimer} />
-            </div>
+            </>
           ) : (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-8 text-center space-y-3">
-              <div className="flex h-12 w-12 mx-auto items-center justify-center rounded-2xl bg-blue-50 text-blue-600 shadow-2xs">
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/70 p-12 text-center space-y-3">
+              <div className="flex h-12 w-12 mx-auto items-center justify-center rounded-2xl bg-slate-100 text-slate-500 shadow-2xs">
                 <Activity className="h-6 w-6" />
               </div>
               <div className="max-w-md mx-auto space-y-1">
                 <h4 className="text-sm font-bold text-slate-800">
-                  Ready for Real YOLO Inference
+                  No Motion Data Available Yet
                 </h4>
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Select a frame count (e.g. Quick Sample 30 frames for fast testing or Full Video for complete analysis) and click{' '}
-                  <strong>&quot;Run Computer Vision Analysis&quot;</strong> to execute the full vehicle detection and tracking pipeline.
+                  Switch to <strong>Area A (Video Analysis)</strong> and run computer vision analysis to compute
+                  per-vehicle pixel displacement, movement rates (px/s), and stationary classifications.
                 </p>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setActiveArea('analysis')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white text-xs font-bold hover:bg-blue-700 transition-colors cursor-pointer"
+                  >
+                    <Video className="h-3.5 w-3.5" />
+                    <span>Go to Video Analysis</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}
-        </section>
-      </div>
+        </div>
+      )}
+
+      {/* AREA C: Traffic & Route Impact (Temporarily hidden from presentation UI by default) */}
+      {showTrafficImpactTab && currentArea === 'impact' && (
+        <VisionTrafficImpact
+          analysisResult={analysisResult}
+          onNavigateToPlanner={onNavigateToPlanner}
+        />
+      )}
     </div>
   )
 }

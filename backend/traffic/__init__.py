@@ -8,6 +8,8 @@ from .loader import (
 from .vision_adapter import (
     ObservationValidationStatus,
     VisionTrafficAdapter,
+    get_default_vision_adapter,
+    set_default_vision_adapter,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "TrafficEdgeKey",
     "TrafficSnapshot",
     "VisionTrafficAdapter",
+    "get_default_vision_adapter",
+    "set_default_vision_adapter",
 ]

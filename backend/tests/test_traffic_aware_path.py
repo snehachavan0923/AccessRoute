@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -27,7 +28,18 @@ from backend.routing.traffic_aware_path import (
     TrafficRouteComparisonService,
 )
 from backend.tests.test_traffic_loader import create_synthetic_dataset
-from backend.traffic import TrafficDataset
+from backend.traffic import (
+    TrafficDataset,
+    TrafficEdgeKey,
+    VisionTrafficAdapter,
+    get_default_vision_adapter,
+    set_default_vision_adapter,
+)
+from backend.vision.schemas import (
+    CameraMetadata,
+    ObservationTimeEnvelope,
+    VisionEdgeObservation,
+)
 
 
 def make_forked_graph() -> nx.MultiDiGraph:
@@ -622,6 +634,388 @@ class RouteComparisonEndpointTests(unittest.TestCase):
         self.assertAlmostEqual(first.longitude, 77.671263, places=4)
 
 
+class TestVisionTrafficRoutingIntegration(unittest.TestCase):
+    """Focused test suite verifying integration between VisionTrafficAdapter and traffic-aware routing."""
+
+    def setUp(self) -> None:
+        self.now = datetime.now(timezone.utc)
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.dataset_dir = Path(self.temp_dir.name)
+
+        # Forked graph:
+        # Path A: 1 -> 2 -> 3 (direct: 100m + 100m = 200m)
+        # Path B: 1 -> 4 -> 3 (detour: 120m + 120m = 240m)
+        nodes = [
+            {"node_id": "0", "osm_node_id": "1", "x": "0.0", "y": "0.0"},
+            {"node_id": "1", "osm_node_id": "2", "x": "0.001", "y": "0.0"},
+            {"node_id": "2", "osm_node_id": "3", "x": "0.002", "y": "0.0"},
+            {"node_id": "3", "osm_node_id": "4", "x": "0.001", "y": "0.001"},
+        ]
+        edges = [
+            {"edge_id": "0", "u": "0", "v": "1", "osm_u": "1", "osm_v": "2", "key": "0", "length_m": "100.0", "highway": "primary", "maxspeed": "50"},
+            {"edge_id": "1", "u": "1", "v": "2", "osm_u": "2", "osm_v": "3", "key": "0", "length_m": "100.0", "highway": "primary", "maxspeed": "50"},
+            {"edge_id": "2", "u": "0", "v": "3", "osm_u": "1", "osm_v": "4", "key": "0", "length_m": "120.0", "highway": "footway", "maxspeed": "10"},
+            {"edge_id": "3", "u": "3", "v": "2", "osm_u": "4", "osm_v": "3", "key": "0", "length_m": "120.0", "highway": "footway", "maxspeed": "10"},
+            {"edge_id": "4", "u": "2", "v": "1", "osm_u": "3", "osm_v": "2", "key": "0", "length_m": "100.0", "highway": "primary", "maxspeed": "50"},
+            {"edge_id": "5", "u": "1", "v": "0", "osm_u": "2", "osm_v": "1", "key": "0", "length_m": "100.0", "highway": "primary", "maxspeed": "50"},
+        ]
+        timestamps = ["2026-01-01 08:30:00", "2026-01-01 02:00:00"]
+        # Index 0: 1->2 has 0.85, 2->3 has 0.85, detour has 0.0
+        # Index 1: 1->2 has 0.05, 2->3 has 0.05, detour has 0.0
+        congestion_matrix = np.array(
+            [
+                [0.85, 0.85, 0.0, 0.0, 0.0, 0.0],
+                [0.05, 0.05, 0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        speed_matrix = np.ones((2, 6), dtype=np.float32) * 30.0
+        vehicle_matrix = np.ones((2, 6), dtype=np.float32) * 15.0
+
+        create_synthetic_dataset(
+            self.dataset_dir,
+            nodes=nodes,
+            edges=edges,
+            timestamps=timestamps,
+            congestion_matrix=congestion_matrix,
+            speed_matrix=speed_matrix,
+            vehicle_matrix=vehicle_matrix,
+        )
+        self.dataset = TrafficDataset.load(self.dataset_dir)
+
+        self.mock_network_provider = Mock(spec=PedestrianNetworkProvider)
+        self.mock_network_provider.load.return_value = make_forked_graph()
+
+        self.settings = NetworkAreaSettings(buffer_meters=500, max_diagonal_meters=5000)
+        self.origin = Coordinate(0.0, 0.0)
+        self.destination = Coordinate(0.0, 0.002)
+
+        # Fresh isolated vision adapter with strict spatial calibration enabled
+        self.vision_adapter = VisionTrafficAdapter(require_spatial_calibration=True)
+
+        self.calibrated_camera = CameraMetadata(
+            camera_id="cam_calib_01",
+            latitude=12.84,
+            longitude=77.67,
+            heading_degrees=90.0,
+            target_osm_u=1,
+            target_osm_v=2,
+            target_osm_key=0,
+            is_spatially_calibrated=True,
+        )
+        self.uncalibrated_camera = CameraMetadata(
+            camera_id="cam_uncalib_01",
+            latitude=12.84,
+            longitude=77.67,
+            heading_degrees=90.0,
+            target_osm_u=1,
+            target_osm_v=2,
+            target_osm_key=0,
+            is_spatially_calibrated=False,
+        )
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+        set_default_vision_adapter(None)
+
+    def _make_observation(
+        self,
+        osm_u: int = 1,
+        osm_v: int = 2,
+        osm_key: int = 0,
+        camera: CameraMetadata | None = None,
+        congestion_index: float | None = 0.90,
+        quality_score: float = 0.95,
+        start_time: datetime | None = None,
+        duration_seconds: float = 60.0,
+        ttl_seconds: float = 900.0,
+    ) -> VisionEdgeObservation:
+        start = start_time or (self.now - timedelta(seconds=60))
+        end = start + timedelta(seconds=duration_seconds)
+        cam = camera or self.calibrated_camera
+        return VisionEdgeObservation(
+            camera_id=cam.camera_id,
+            camera_metadata=cam,
+            osm_u=osm_u,
+            osm_v=osm_v,
+            osm_key=osm_key,
+            timing=ObservationTimeEnvelope(
+                start_time=start,
+                end_time=end,
+                duration_seconds=duration_seconds,
+                time_to_live_seconds=ttl_seconds,
+            ),
+            unique_vehicles_observed=10,
+            vehicles_by_class={"car": 10},
+            observation_quality_score=quality_score,
+            experimental_congestion_index=congestion_index,
+        )
+
+    def test_simulated_traffic_fallback_when_no_vision_observation(self) -> None:
+        """When VisionTrafficAdapter has no observation for an edge, fallback to simulated dataset."""
+        # Empty adapter
+        self.assertEqual(len(self.vision_adapter), 0)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        # time_index=1 has low simulated congestion (0.05 on direct path edges)
+        # Direct path cost = 100*(1+2*0.05) + 100*(1+2*0.05) = 220.0m
+        # Detour path cost = 120 + 120 = 240.0m
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.shortest_distance.distance_meters, 200.0)
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 220.0, places=1)
+        self.assertEqual(res.traffic_accessibility_aware.matched_traffic_edges_count, 2)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.average_congestion, 0.05, places=2)
+
+    def test_valid_vision_observation_overrides_simulated_traffic(self) -> None:
+        """A valid calibrated vision observation overrides simulated congestion and alters route choice."""
+        # Register heavy congestion on edge 1 -> 2 via VisionTrafficAdapter
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=0.90,
+            camera=self.calibrated_camera,
+        )
+        self.vision_adapter.set_observation(obs)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        # At time_index=1, simulated was 0.05.
+        # With vision override:
+        # Edge 1->2 has congestion 0.90 (cost = 100 * (1 + 2*0.90) = 280m)
+        # Edge 2->3 has simulated congestion 0.05 (cost = 100 * (1 + 2*0.05) = 110m)
+        # Path A total cost = 280 + 110 = 390m
+        # Detour Path B (1->4->3) total cost = 120 + 120 = 240m
+        # Alternative path should now select Detour Path B!
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        self.assertEqual(res.status, "alternative_found")
+        # Shortest distance path remains independent of traffic
+        self.assertEqual(res.shortest_distance.distance_meters, 200.0)
+        self.assertAlmostEqual(res.shortest_distance.cost, 390.0, places=1)
+        # Traffic-aware route shifts to the 240m detour to avoid high vision congestion
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 240.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 240.0, places=1)
+
+    def test_uncalibrated_observation_falls_back_to_simulated(self) -> None:
+        """Uncalibrated camera observation is rejected by safeguards and falls back to simulated data."""
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=0.90,
+            camera=self.uncalibrated_camera,  # is_spatially_calibrated=False
+        )
+        self.vision_adapter.set_observation(obs)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        # Uncalibrated vision is rejected; falls back to simulated 0.05 -> selects direct path (200m)
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 220.0, places=1)
+
+    def test_expired_observation_falls_back_to_simulated(self) -> None:
+        """Expired observation past TTL is ignored by adapter and falls back to simulated data."""
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=0.90,
+            camera=self.calibrated_camera,
+            start_time=self.now - timedelta(hours=2),
+            ttl_seconds=900.0,
+        )
+        self.vision_adapter.set_observation(obs)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        # Expired observation is filtered out; falls back to simulated 0.05 -> direct path (200m)
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 220.0, places=1)
+
+    def test_low_quality_observation_falls_back_to_simulated(self) -> None:
+        """Low-quality observation below quality threshold falls back to simulated data."""
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=0.90,
+            quality_score=0.40,  # Below adapter minimum threshold (0.70)
+            camera=self.calibrated_camera,
+        )
+        self.vision_adapter.set_observation(obs)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 220.0, places=1)
+
+    def test_missing_congestion_index_falls_back_to_simulated(self) -> None:
+        """Observation lacking explicit congestion indicator falls back to simulated data."""
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=None,  # No experimental congestion index provided
+            camera=self.calibrated_camera,
+        )
+        self.vision_adapter.set_observation(obs)
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        res = service.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 220.0, places=1)
+
+    def test_directed_edge_isolation_no_reverse_edge_leakage(self) -> None:
+        """Observation registered for (1 -> 2) does not leak to reverse directed edge (2 -> 1)."""
+        obs = self._make_observation(
+            osm_u=1,
+            osm_v=2,
+            osm_key=0,
+            congestion_index=0.95,
+            camera=self.calibrated_camera,
+        )
+        self.vision_adapter.set_observation(obs)
+
+        # Forward edge matches
+        self.assertEqual(
+            self.vision_adapter.get_congestion_index(TrafficEdgeKey(osm_u=1, osm_v=2, key=0)),
+            0.95,
+        )
+        # Reverse edge does NOT match
+        self.assertIsNone(
+            self.vision_adapter.get_congestion_index(TrafficEdgeKey(osm_u=2, osm_v=1, key=0))
+        )
+
+        # Route in reverse: origin at node 3, destination at node 1
+        service = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=self.vision_adapter,
+        )
+
+        res = service.compare(
+            origin=Coordinate(0.0, 0.002),
+            destination=Coordinate(0.0, 0.0),
+            time_index=1,
+            traffic_weight=2.0,
+        )
+
+        # Reverse path 3 -> 2 -> 1 has simulated congestion 0.0 (edges 4 and 5 in dataset)
+        # Cost = 100 * 1.0 + 100 * 1.0 = 200.0m
+        self.assertEqual(res.traffic_accessibility_aware.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.cost, 200.0, places=1)
+
+    def test_routing_behavior_unchanged_when_vision_unavailable(self) -> None:
+        """Existing routing behavior is identical whether VisionTrafficAdapter is None or empty."""
+        service_default = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+        )
+        service_explicit_empty = TrafficRouteComparisonService(
+            network_provider=self.mock_network_provider,
+            traffic_dataset=self.dataset,
+            settings=self.settings,
+            vision_adapter=VisionTrafficAdapter(),
+        )
+
+        res1 = service_default.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=0,
+            traffic_weight=2.0,
+        )
+        res2 = service_explicit_empty.compare(
+            origin=self.origin,
+            destination=self.destination,
+            time_index=0,
+            traffic_weight=2.0,
+        )
+
+        self.assertEqual(res1.status, res2.status)
+        self.assertEqual(res1.shortest_distance.distance_meters, res2.shortest_distance.distance_meters)
+        self.assertEqual(res1.traffic_accessibility_aware.distance_meters, res2.traffic_accessibility_aware.distance_meters)
+        self.assertAlmostEqual(res1.traffic_accessibility_aware.cost, res2.traffic_accessibility_aware.cost, places=2)
+        self.assertEqual(res1.traffic_accessibility_aware.matched_traffic_edges_count, res2.traffic_accessibility_aware.matched_traffic_edges_count)
+
+
 if __name__ == "__main__":
     unittest.main()
-

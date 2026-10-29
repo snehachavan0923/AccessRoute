@@ -30,6 +30,12 @@ from typing import Any, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend.vision.motion_analyzer import (
+    CALIBRATION_REQUIREMENTS_SUMMARY,
+    TrackMotionMeasurement,
+    VideoMotionSummary,
+    analyze_video_motion,
+)
 from backend.vision.post_processor import (
     DEFAULT_MIN_TRACK_LIFESPAN_FRAMES,
     PostProcessedVideoResult,
@@ -81,6 +87,10 @@ class TrackletDetail(BaseModel):
     average_confidence: float = Field(ge=0.0, le=1.0, description="Mean detection confidence")
     is_filtered: bool = Field(description="True if pruned by minimum lifespan threshold")
     has_class_switch: bool = Field(description="True if tracklet had multiple raw classes")
+    motion: TrackMotionMeasurement | None = Field(
+        default=None,
+        description="Optional image-plane motion and pixel displacement measurement",
+    )
 
 
 class PipelineEvaluationReport(BaseModel):
@@ -123,6 +133,10 @@ class PipelineEvaluationReport(BaseModel):
     # Granular details
     tracklets: list[TrackletDetail] = Field(default_factory=list, description="Detailed tracklet records")
     reclassified_detections: list[ReclassifiedDetection] = Field(default_factory=list, description="Specific detections reclassified")
+    motion_summary: VideoMotionSummary | None = Field(
+        default=None,
+        description="Aggregate image-plane motion analysis across tracked vehicles",
+    )
 
     disclaimer: str = Field(
         default=(
@@ -184,6 +198,18 @@ def evaluate_frames(
         t.track_id: t.observed_frame_count for t in processed_result.tracklets.values()
     }
 
+    # Analyze vehicle image-plane motion across frames
+    tracklet_classes = {
+        t.track_id: t.assigned_class for t in processed_result.tracklets.values()
+    }
+    motion_summary = analyze_video_motion(
+        frame_results=frame_results,
+        fps=fps,
+        tracklet_classes=tracklet_classes,
+        filtered_track_ids=processed_result.filtered_track_ids,
+    )
+    motion_by_track = {m.track_id: m for m in motion_summary.track_measurements}
+
     # Identify individual detection events whose class was reclassified
     reclassified_detections: list[ReclassifiedDetection] = []
     for frame in frame_results:
@@ -223,6 +249,7 @@ def evaluate_frames(
                 average_confidence=t.average_confidence,
                 is_filtered=t.is_filtered,
                 has_class_switch=t.has_class_switch,
+                motion=motion_by_track.get(t.track_id),
             )
         )
 
@@ -254,6 +281,7 @@ def evaluate_frames(
         resolved_class_switches_count=summary.resolved_class_switches_count,
         tracklets=tracklet_details,
         reclassified_detections=reclassified_detections,
+        motion_summary=motion_summary,
     )
 
 
@@ -622,6 +650,13 @@ def format_evaluation_report(report: PipelineEvaluationReport) -> str:
         "- No Sidewalk Accessibility Sensing:\n"
         "  Motorized vehicle detection provides zero information regarding\n"
         "  pedestrian accessibility barriers, curb ramps, stairs, or walkway widths."
+    )
+    lines.append(
+        "- No Physical Vehicle Speed Estimation:\n"
+        "  Pixel displacement measures 2D movement in image sensor coordinates only.\n"
+        "  Estimating real-world speed (m/s or km/h) requires metric camera-to-roadway\n"
+        "  homography calibration, perspective distortion rectification, and verified\n"
+        "  ground control points. Pixel displacement is NOT vehicle speed."
     )
     lines.append(sep)
 

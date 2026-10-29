@@ -1,5 +1,19 @@
-"""Vision module for vehicle and object detection from video footage."""
-
+from backend.vision.motion_analyzer import (
+    CALIBRATION_REQUIREMENTS_SUMMARY,
+    ConsecutiveStepDisplacement,
+    MotionMeasurementStatus,
+    TrackMotionMeasurement,
+    TrackObservationPoint,
+    VideoMotionSummary,
+    analyze_single_track_motion,
+    analyze_video_motion,
+    compute_bounding_box_center,
+    compute_pixel_displacement,
+)
+from backend.vision.observation_builder import (
+    ObservationBuildResult,
+    build_vision_edge_observation,
+)
 from backend.vision.post_processor import (
     DEFAULT_MIN_TRACK_LIFESPAN_FRAMES,
     PostProcessedVideoResult,
@@ -40,4 +54,16 @@ __all__ = [
     "PostProcessingSummary",
     "PostProcessedVideoResult",
     "TrackletPostProcessor",
+    "ObservationBuildResult",
+    "build_vision_edge_observation",
+    "CALIBRATION_REQUIREMENTS_SUMMARY",
+    "ConsecutiveStepDisplacement",
+    "MotionMeasurementStatus",
+    "TrackMotionMeasurement",
+    "TrackObservationPoint",
+    "VideoMotionSummary",
+    "analyze_single_track_motion",
+    "analyze_video_motion",
+    "compute_bounding_box_center",
+    "compute_pixel_displacement",
 ]

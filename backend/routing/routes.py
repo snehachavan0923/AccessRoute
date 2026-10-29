@@ -1,6 +1,9 @@
+from typing import Any
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.accessibility import get_default_accessibility_adapter
 from backend.routing.contracts import Coordinate
 from backend.routing.shortest_path import (
     NetworkAreaTooLargeError,
@@ -9,6 +12,7 @@ from backend.routing.shortest_path import (
     ShortestPathService,
 )
 from backend.routing.traffic_aware_path import TrafficRouteComparisonService
+from backend.traffic import get_default_vision_adapter
 
 router = APIRouter(prefix="/api/routes", tags=["routes"])
 shortest_path_service = ShortestPathService()
@@ -31,6 +35,10 @@ class CompareRoutesRequest(BaseModel):
     timestamp: str | None = None
     time_index: int | None = None
     traffic_weight: float = Field(default=2.0, ge=0.0, le=50.0)
+    accessibility_mode: str = Field(
+        default="standard",
+        description="Mobility mode: 'standard' walking or 'step_free' (avoids stairs and active barriers)",
+    )
 
 
 class CoordinateResponse(BaseModel):
@@ -53,6 +61,15 @@ class RouteCandidateResponse(BaseModel):
     matched_traffic_edges_count: int
     traffic_coverage_percent: float
     average_congestion: float | None = None
+    traffic_source: str = "simulated"
+    vision_matched_edges_count: int = 0
+    simulated_matched_edges_count: int = 0
+    steps_count: int = 0
+    unpaved_edges_count: int = 0
+    obstacles_count: int = 0
+    traffic_cost_penalty: float = 0.0
+    accessibility_cost_penalty: float = 0.0
+    accessibility_constraints_applied: list[str] = []
 
 
 class RouteComparisonResponse(BaseModel):
@@ -65,6 +82,11 @@ class RouteComparisonResponse(BaseModel):
     cost_formula: str
     status: str
     disclaimer: str
+    primary_traffic_source: str = "simulated"
+    vision_observation_active: bool = False
+    accessibility_mode: str = "standard"
+    explanation: str = ""
+
 
 
 @router.post(
@@ -127,6 +149,15 @@ def _to_candidate_response(candidate) -> RouteCandidateResponse:
         matched_traffic_edges_count=candidate.matched_traffic_edges_count,
         traffic_coverage_percent=candidate.traffic_coverage_percent,
         average_congestion=candidate.average_congestion,
+        traffic_source=candidate.traffic_source,
+        vision_matched_edges_count=candidate.vision_matched_edges_count,
+        simulated_matched_edges_count=candidate.simulated_matched_edges_count,
+        steps_count=candidate.steps_count,
+        unpaved_edges_count=candidate.unpaved_edges_count,
+        obstacles_count=candidate.obstacles_count,
+        traffic_cost_penalty=candidate.traffic_cost_penalty,
+        accessibility_cost_penalty=candidate.accessibility_cost_penalty,
+        accessibility_constraints_applied=list(candidate.accessibility_constraints_applied),
     )
 
 
@@ -153,6 +184,7 @@ def compare_routes(request: CompareRoutesRequest) -> RouteComparisonResponse:
             timestamp=request.timestamp,
             time_index=request.time_index,
             traffic_weight=request.traffic_weight,
+            accessibility_mode=request.accessibility_mode,
         )
     except NetworkAreaTooLargeError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -192,7 +224,94 @@ def compare_routes(request: CompareRoutesRequest) -> RouteComparisonResponse:
         cost_formula=comparison.cost_formula,
         status=comparison.status,
         disclaimer=comparison.disclaimer,
+        primary_traffic_source=comparison.primary_traffic_source,
+        vision_observation_active=comparison.vision_observation_active,
+        accessibility_mode=comparison.accessibility_mode,
+        explanation=comparison.explanation,
     )
+
+
+class ObservationStatusResponse(BaseModel):
+    vision_registered_count: int
+    active_vision_observations_count: int
+    active_vision_observations: list[dict[str, Any]]
+    accessibility_registered_count: int
+    active_accessibility_obstacles_count: int
+    active_accessibility_obstacles: list[dict[str, Any]]
+    traffic_dataset_fallback_active: bool = True
+    traffic_dataset_name: str = "Electronic City, Bengaluru (Simulated)"
+    active_routing_traffic_source: str = "simulated"
+
+
+@router.get("/observation-status", response_model=ObservationStatusResponse)
+def get_routing_observation_status() -> ObservationStatusResponse:
+    """Return status of live vision observations and accessibility obstacles affecting routing."""
+    v_adapter = get_default_vision_adapter()
+    a_adapter = get_default_accessibility_adapter()
+
+    active_v = v_adapter.get_active_observations()
+    active_a = a_adapter.get_active_obstacles()
+
+    serialized_v = [
+        {
+            "osm_u": obs.osm_u,
+            "osm_v": obs.osm_v,
+            "osm_key": obs.osm_key,
+            "experimental_congestion_index": obs.experimental_congestion_index,
+            "observation_quality_score": obs.observation_quality_score,
+            "tracked_vehicles_count": obs.unique_vehicles_observed,
+            "is_spatially_calibrated": (
+                obs.camera_metadata.is_spatially_calibrated
+                if obs.camera_metadata
+                else False
+            ),
+            "camera_id": obs.camera_id,
+        }
+        for obs in active_v
+    ]
+
+    serialized_a = [
+        {
+            "obstacle_id": obs.obstacle_id,
+            "osm_u": obs.osm_u,
+            "osm_v": obs.osm_v,
+            "osm_key": obs.osm_key,
+            "obstacle_type": obs.obstacle_type.value,
+            "severity": obs.severity.value,
+            "penalty_multiplier": obs.penalty_multiplier,
+            "description": obs.description,
+            "is_verified": obs.is_verified,
+            "confidence": obs.confidence,
+        }
+        for obs in active_a
+    ]
+
+    dataset = comparison_service._traffic_service.dataset
+    has_dataset = dataset is not None
+
+    if len(active_v) > 0 and has_dataset:
+        active_source = "mixed"
+    elif len(active_v) > 0:
+        active_source = "vision"
+    elif has_dataset:
+        active_source = "simulated"
+    else:
+        active_source = "none"
+
+    return ObservationStatusResponse(
+        vision_registered_count=len(v_adapter),
+        active_vision_observations_count=len(active_v),
+        active_vision_observations=serialized_v,
+        accessibility_registered_count=len(active_a),
+        active_accessibility_obstacles_count=len(active_a),
+        active_accessibility_obstacles=serialized_a,
+        traffic_dataset_fallback_active=has_dataset,
+        traffic_dataset_name=(
+            "Electronic City, Bengaluru (Simulated)" if has_dataset else "None"
+        ),
+        active_routing_traffic_source=active_source,
+    )
+
 
 
 class TimePresetResponse(BaseModel):
