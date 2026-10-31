@@ -281,7 +281,7 @@ export default function VisionMotionSummary({ motionSummary }) {
         </div>
       </div>
 
-      {/* Educational Notice Banner & Calibration Disclaimer */}
+      {/* Educational Notice Banner & Calibration Disclaimer 
       <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-3.5 sm:p-4 text-xs text-blue-950 space-y-2">
         <div className="flex items-center gap-2 font-bold text-blue-950">
           <Info className="h-4 w-4 text-blue-700 shrink-0" />
@@ -302,6 +302,7 @@ export default function VisionMotionSummary({ motionSummary }) {
           </div>
         </div>
       </div>
+ */}
     </div>
   )
 }

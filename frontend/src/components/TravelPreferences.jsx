@@ -72,33 +72,30 @@ export default function TravelPreferences({
           <button
             type="button"
             onClick={() => onTrafficWeightChange(0.5)}
-            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${
-              trafficWeight <= 1.0
+            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${trafficWeight <= 1.0
                 ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold shadow-xs'
                 : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
+              }`}
           >
             Shorter distance
           </button>
           <button
             type="button"
             onClick={() => onTrafficWeightChange(2.0)}
-            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${
-              trafficWeight > 1.0 && trafficWeight <= 3.0
+            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${trafficWeight > 1.0 && trafficWeight <= 3.0
                 ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold shadow-xs'
                 : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
+              }`}
           >
             Balanced
           </button>
           <button
             type="button"
             onClick={() => onTrafficWeightChange(4.0)}
-            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${
-              trafficWeight > 3.0
+            className={`rounded-lg border px-2 py-1.5 text-center text-[11px] font-medium transition-all ${trafficWeight > 3.0
                 ? 'border-blue-500 bg-blue-50 text-blue-700 font-semibold shadow-xs'
                 : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
+              }`}
           >
             Avoid congestion
           </button>
@@ -128,7 +125,7 @@ export default function TravelPreferences({
         </p>
       </div>
 
-      {/* Mobility & Accessibility Mode */}
+      {/* Mobility & Accessibility Mode 
       <div className="space-y-1.5 pt-2 border-t border-slate-100">
         <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
           <Footprints className="h-3.5 w-3.5 text-slate-400" />
@@ -163,7 +160,7 @@ export default function TravelPreferences({
             ? 'Avoids stairs and verified physical obstacles. Accessibility coverage is incomplete: missing obstacle information does not mean a route is accessible.'
             : 'Standard pedestrian route. Stairs and ordinary footpaths are permitted.'}
         </p>
-      </div>
+      </div>*/}
     </div>
   )
 }
