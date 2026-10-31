@@ -1,4 +1,4 @@
-import { Activity, Layers, Filter, CheckCircle2 } from 'lucide-react'
+import { Activity, Layers, Filter, CheckCircle2, Info } from 'lucide-react'
 
 export default function VisionMetricsCards({ report, processingTime }) {
   if (!report) return null
@@ -7,52 +7,39 @@ export default function VisionMetricsCards({ report, processingTime }) {
     {
       title: 'Total Detection Events',
       value: report.processed_total_detections,
-      secondary:
-        report.raw_total_detections !== report.processed_total_detections
-          ? `Raw: ${report.raw_total_detections.toLocaleString()} events`
-          : 'All detections retained',
-      description: 'Cumulative per-frame bounding boxes observed across evaluated frames.',
+      description: 'Bounding boxes detected across frames, not unique vehicles.',
       icon: Activity,
       color: 'blue',
       badge: `${report.processed_frames} frames`,
     },
     {
-      title: 'Distinct Tracked IDs',
+      title: 'Tracked Vehicle IDs',
       value: report.processed_total_tracked_ids,
-      secondary:
-        report.raw_total_tracked_ids !== report.processed_total_tracked_ids
-          ? `Raw: ${report.raw_total_tracked_ids} tracker IDs`
-          : 'No IDs pruned',
-      description: 'ByteTrack spatial trajectories meeting minimum lifespan criteria.',
+      description: 'Vehicle trajectories estimated across video frames.',
       icon: Layers,
       color: 'emerald',
-      badge: 'Trajectory tracking',
+      badge: 'Retained tracks',
     },
     {
-      title: 'Filtered Transient Tracks',
+      title: 'Short Tracks Filtered',
       value: report.filtered_tracks_count,
-      secondary: `${report.filtered_detections_count} transient boxes pruned`,
-      description: `Tracks active for fewer than ${report.min_track_lifespan_frames} frames pruned as transient noise.`,
+      description:
+        'Very short tracks are excluded because they may be temporary detection noise.',
       icon: Filter,
       color: 'amber',
       badge: `< ${report.min_track_lifespan_frames} frames`,
     },
     {
-      title: 'Class-Smoothed Tracks',
+      title: 'Vehicle Labels Stabilized',
       value: report.resolved_class_switches_count,
-      secondary:
-        (report.reclassified_detections?.length || 0) > 0
-          ? `${report.reclassified_detections.length} detections smoothed across ${report.resolved_class_switches_count} track${report.resolved_class_switches_count === 1 ? '' : 's'}`
-          : report.raw_class_switches_count > 0
-          ? `${report.raw_class_switches_count} tracks with raw class switches`
-          : 'Stable labels (0 oscillations)',
-      description: 'Retained vehicle tracks whose oscillating raw class labels were resolved to a single category by temporal majority voting.',
+      description:
+        'The system smooths inconsistent vehicle labels across video frames.',
       icon: CheckCircle2,
       color: 'indigo',
       badge:
         (report.reclassified_detections?.length || 0) > 0
           ? `${report.reclassified_detections.length} detections`
-          : 'Majority voted',
+          : 'Consistent',
     },
   ]
 
@@ -89,13 +76,19 @@ export default function VisionMetricsCards({ report, processingTime }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-          Core Vision Analytics & Tracking Metrics
-        </h3>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+        <div>
+          <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+            Detection &amp; Tracking Summary
+          </h3>
+          <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+            <Info className="h-3 w-3 text-slate-400 shrink-0" />
+            <span>Counts are video analysis estimates; tracking IDs may not match unique physical vehicles.</span>
+          </p>
+        </div>
         {processingTime !== undefined && (
-          <span className="text-[11px] font-medium text-slate-500">
-            Inference & pipeline completed in{' '}
+          <span className="text-[11px] font-medium text-slate-500 shrink-0">
+            Inference completed in{' '}
             <strong className="text-slate-700">{processingTime}s</strong>
           </span>
         )}
@@ -133,13 +126,9 @@ export default function VisionMetricsCards({ report, processingTime }) {
                 <div className="text-xs font-bold text-slate-800 mt-0.5">
                   {card.title}
                 </div>
-
-                <div className="text-[11px] font-semibold text-slate-600 mt-1">
-                  {card.secondary}
-                </div>
               </div>
 
-              <p className="mt-2.5 pt-2 border-t border-slate-200/60 text-[11px] leading-snug text-slate-500">
+              <p className="mt-2.5 pt-2 border-t border-slate-200/60 text-[11px] leading-snug text-slate-600">
                 {card.description}
               </p>
             </div>
@@ -149,3 +138,4 @@ export default function VisionMetricsCards({ report, processingTime }) {
     </div>
   )
 }
+

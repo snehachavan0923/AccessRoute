@@ -1,4 +1,5 @@
-import { Clock, Sliders, Footprints } from 'lucide-react'
+/* eslint-disable no-unused-vars */
+import { Clock, Sliders } from 'lucide-react'
 
 const TIME_PRESETS = [
   { id: 'morning', label: 'Morning Peak — 08:30 AM', timestamp: '2026-01-01 08:30:00' },
