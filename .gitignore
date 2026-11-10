@@ -22,6 +22,10 @@ build/
 # Python generated files
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Test caches
+.pytest_cache/
 
 # Local databases
 *.db
