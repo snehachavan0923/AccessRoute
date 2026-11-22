@@ -12,7 +12,7 @@ from backend.routing.shortest_path import (
     ShortestPathService,
 )
 from backend.routing.traffic_aware_path import TrafficRouteComparisonService
-from backend.traffic import get_default_vision_adapter
+from backend.traffic import get_default_tomtom_adapter, get_default_vision_adapter
 
 router = APIRouter(prefix="/api/routes", tags=["routes"])
 shortest_path_service = ShortestPathService()
@@ -64,12 +64,16 @@ class RouteCandidateResponse(BaseModel):
     traffic_source: str = "simulated"
     vision_matched_edges_count: int = 0
     simulated_matched_edges_count: int = 0
+    tomtom_matched_edges_count: int = 0
+    unmatched_edges_count: int = 0
+    road_closures_count: int = 0
     steps_count: int = 0
     unpaved_edges_count: int = 0
     obstacles_count: int = 0
     traffic_cost_penalty: float = 0.0
     accessibility_cost_penalty: float = 0.0
     accessibility_constraints_applied: list[str] = []
+    network_is_stale: bool = False
 
 
 class RouteComparisonResponse(BaseModel):
@@ -86,6 +90,7 @@ class RouteComparisonResponse(BaseModel):
     vision_observation_active: bool = False
     accessibility_mode: str = "standard"
     explanation: str = ""
+    network_is_stale: bool = False
 
 
 
@@ -152,12 +157,16 @@ def _to_candidate_response(candidate) -> RouteCandidateResponse:
         traffic_source=candidate.traffic_source,
         vision_matched_edges_count=candidate.vision_matched_edges_count,
         simulated_matched_edges_count=candidate.simulated_matched_edges_count,
+        tomtom_matched_edges_count=getattr(candidate, "tomtom_matched_edges_count", 0),
+        unmatched_edges_count=getattr(candidate, "unmatched_edges_count", 0),
+        road_closures_count=getattr(candidate, "road_closures_count", 0),
         steps_count=candidate.steps_count,
         unpaved_edges_count=candidate.unpaved_edges_count,
         obstacles_count=candidate.obstacles_count,
         traffic_cost_penalty=candidate.traffic_cost_penalty,
         accessibility_cost_penalty=candidate.accessibility_cost_penalty,
         accessibility_constraints_applied=list(candidate.accessibility_constraints_applied),
+        network_is_stale=getattr(candidate, "network_is_stale", False),
     )
 
 
@@ -228,6 +237,7 @@ def compare_routes(request: CompareRoutesRequest) -> RouteComparisonResponse:
         vision_observation_active=comparison.vision_observation_active,
         accessibility_mode=comparison.accessibility_mode,
         explanation=comparison.explanation,
+        network_is_stale=getattr(comparison, "network_is_stale", False),
     )
 
 
@@ -241,13 +251,19 @@ class ObservationStatusResponse(BaseModel):
     traffic_dataset_fallback_active: bool = True
     traffic_dataset_name: str = "Electronic City, Bengaluru (Simulated)"
     active_routing_traffic_source: str = "simulated"
+    tomtom_traffic_enabled: bool = False
+    tomtom_api_key_configured: bool = False
+    tomtom_daily_requests_used: int = 0
+    tomtom_daily_requests_limit: int = 200
+    tomtom_cache_entries_count: int = 0
 
 
 @router.get("/observation-status", response_model=ObservationStatusResponse)
 def get_routing_observation_status() -> ObservationStatusResponse:
-    """Return status of live vision observations and accessibility obstacles affecting routing."""
+    """Return status of live vision observations, TomTom traffic, and accessibility obstacles affecting routing."""
     v_adapter = get_default_vision_adapter()
     a_adapter = get_default_accessibility_adapter()
+    tt_adapter = get_default_tomtom_adapter()
 
     active_v = v_adapter.get_active_observations()
     active_a = a_adapter.get_active_obstacles()
@@ -288,13 +304,21 @@ def get_routing_observation_status() -> ObservationStatusResponse:
 
     dataset = comparison_service._traffic_service.dataset
     has_dataset = dataset is not None
+    has_tomtom = tt_adapter.is_available
+    has_vision = len(active_v) > 0
 
-    if len(active_v) > 0 and has_dataset:
+    sources = []
+    if has_vision:
+        sources.append("vision")
+    if has_tomtom:
+        sources.append("tomtom")
+    if has_dataset:
+        sources.append("simulated")
+
+    if len(sources) > 1:
         active_source = "mixed"
-    elif len(active_v) > 0:
-        active_source = "vision"
-    elif has_dataset:
-        active_source = "simulated"
+    elif len(sources) == 1:
+        active_source = sources[0]
     else:
         active_source = "none"
 
@@ -310,6 +334,11 @@ def get_routing_observation_status() -> ObservationStatusResponse:
             "Electronic City, Bengaluru (Simulated)" if has_dataset else "None"
         ),
         active_routing_traffic_source=active_source,
+        tomtom_traffic_enabled=tt_adapter.is_available,
+        tomtom_api_key_configured=bool(tt_adapter._api_key),
+        tomtom_daily_requests_used=tt_adapter.daily_requests_count,
+        tomtom_daily_requests_limit=tt_adapter.max_daily_requests,
+        tomtom_cache_entries_count=tt_adapter.cache_size,
     )
 
 

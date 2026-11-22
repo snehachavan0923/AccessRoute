@@ -10,6 +10,8 @@ import {
   Radio,
   Database,
   Sparkles,
+  Globe,
+  Ban,
 } from 'lucide-react'
 
 function formatDistance(meters) {
@@ -28,12 +30,19 @@ function getSourceBadge(source) {
         icon: Radio,
         description: 'Validated computer vision observation active on road segment(s)',
       }
+    case 'tomtom':
+      return {
+        label: 'Live TomTom Traffic',
+        classes: 'bg-emerald-100 text-emerald-800 border-emerald-200',
+        icon: Globe,
+        description: 'Real-time motor-vehicle traffic flow from TomTom Traffic Flow API',
+      }
     case 'mixed':
       return {
-        label: 'Mixed: Vision + Simulated',
+        label: 'Mixed Traffic Sources',
         classes: 'bg-purple-100 text-purple-800 border-purple-200',
         icon: Sparkles,
-        description: 'Combines vision observations with simulated dataset fallback',
+        description: 'Combines live TomTom traffic, vision observations, and/or simulated dataset',
       }
     case 'simulated':
       return {
@@ -135,15 +144,23 @@ export default function RouteResultCards({ comparison, route }) {
               : 'The shortest pedestrian path is also recommended under current traffic and accessibility conditions.')}
         </p>
 
-        {/* Explainability footnote distinguishing simulated vs measured */}
+        {/* Explainability footnote distinguishing live vs simulated vs unmonitored */}
         <div className="pt-1 border-t border-blue-100/80 text-[11px] text-blue-700/90 leading-tight">
-          {comparison.primary_traffic_source === 'vision' ? (
+          {comparison.primary_traffic_source === 'tomtom' ? (
             <span>
-              Validated computer vision observation applied to monitored segment(s). Uncalibrated segments safely use simulated fallback.
+              Real-time motor-vehicle traffic flow from <strong>TomTom Traffic API</strong> applied to matched road corridors. Unmatched corridors use physical baseline distance.
+            </span>
+          ) : comparison.primary_traffic_source === 'vision' ? (
+            <span>
+              Validated computer vision observation applied to monitored segment(s). Uncalibrated segments safely use simulated or TomTom fallback.
+            </span>
+          ) : comparison.primary_traffic_source === 'mixed' ? (
+            <span>
+              Corridor combines live TomTom traffic, computer vision observations, and/or simulated dataset fallback.
             </span>
           ) : (
             <span>
-              Traffic impedance is based on simulated dataset fallback. Vision observations are currently unavailable or rejected by safety calibration gates.
+              Traffic impedance is based on simulated dataset fallback. Live observations are currently unavailable or outside monitored corridors.
             </span>
           )}
         </div>
@@ -156,7 +173,7 @@ export default function RouteResultCards({ comparison, route }) {
           <div className="min-w-0 break-words flex-1">
             <strong>Pedestrian route available; traffic data unavailable for this area.</strong>
             <p className="text-[11px] text-amber-700 mt-0.5 leading-relaxed">
-              Traffic estimates cover roads within Electronic City only. Using the shortest physical walking route.
+              No live TomTom traffic or dataset coverage for this corridor. Using the physical shortest walking route.
             </p>
           </div>
         </div>
@@ -179,6 +196,19 @@ export default function RouteResultCards({ comparison, route }) {
           <AlertCircle className="h-4 w-4 text-slate-500 mt-0.5 shrink-0" />
           <div className="min-w-0 break-words flex-1">
             <strong>Traffic alternative unavailable (showing shortest walking route fallback).</strong>
+          </div>
+        </div>
+      )}
+
+      {/* Road closure warning if detected */}
+      {(trafficAware?.road_closures_count > 0 || shortest?.road_closures_count > 0) && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 max-w-full min-w-0">
+          <Ban className="h-4 w-4 text-amber-700 mt-0.5 shrink-0" />
+          <div className="min-w-0 break-words flex-1">
+            <strong>Reported Motor-Vehicle Road Closure:</strong>
+            <p className="text-[11px] text-amber-800 mt-0.5 leading-relaxed">
+              TomTom reports road closure conditions along {Math.max(trafficAware?.road_closures_count || 0, shortest?.road_closures_count || 0)} corridor segment(s). The routing algorithm conservatively avoids vehicle closures. Note: Some vehicular road closures may still allow pedestrian sidewalk access.
+            </p>
           </div>
         </div>
       )}
@@ -230,30 +260,40 @@ export default function RouteResultCards({ comparison, route }) {
                 <span className="text-slate-500">Traffic-monitored segments</span>
                 <span className="font-medium text-slate-800 shrink-0">
                   {shortest?.matched_traffic_edges_count} of {shortest?.edges_count}
+                  {shortest?.tomtom_matched_edges_count > 0 && (
+                    <span className="ml-1 text-[10px] text-emerald-700 font-bold">
+                      ({shortest.tomtom_matched_edges_count} TomTom live)
+                    </span>
+                  )}
                   {shortest?.vision_matched_edges_count > 0 && (
                     <span className="ml-1 text-[10px] text-indigo-600 font-bold">
                       ({shortest.vision_matched_edges_count} vision)
                     </span>
                   )}
+                  {shortest?.simulated_matched_edges_count > 0 && (
+                    <span className="ml-1 text-[10px] text-slate-600 font-medium">
+                      ({shortest.simulated_matched_edges_count} simulated)
+                    </span>
+                  )}
                 </span>
               </div>
 
-              {/* Staircase & obstacle segment indicators 
-              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-xs min-w-0">
-                <span className="text-slate-500">Stairs / Barriers</span>
-                <span className={`font-medium shrink-0 ${shortest?.steps_count > 0 ? 'text-amber-700 font-semibold' : 'text-slate-800'}`}>
-                  {shortest?.steps_count ?? 0} stairs, {shortest?.obstacles_count ?? 0} obstacles
-                </span>
-              </div> 
-                */}
+              {shortest?.unmatched_edges_count > 0 && (
+                <div className="text-[11px] text-slate-400">
+                  {shortest.unmatched_edges_count} unmonitored / pedestrian segments (distance-only)
+                </div>
+              )}
+
               <div className="rounded-lg bg-slate-50 p-2 text-xs max-w-full min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 min-w-0">
                   <span className="text-slate-600">
-                    {comparison?.primary_traffic_source === 'simulated'
-                      ? 'Average congestion (Simulated Dataset)'
-                      : comparison?.primary_traffic_source === 'vision'
-                        ? 'Average congestion (Vision Traffic)'
-                        : 'Average monitored congestion'}
+                    {comparison?.primary_traffic_source === 'tomtom' || shortest?.traffic_source === 'tomtom'
+                      ? 'Average congestion (TomTom Real-Time)'
+                      : comparison?.primary_traffic_source === 'simulated'
+                        ? 'Average congestion (Simulated Dataset)'
+                        : comparison?.primary_traffic_source === 'vision'
+                          ? 'Average congestion (Vision Traffic)'
+                          : 'Average monitored congestion'}
                   </span>
                   <span className="font-semibold text-slate-900 shrink-0">
                     {shortest?.average_congestion !== null
@@ -263,10 +303,12 @@ export default function RouteResultCards({ comparison, route }) {
                 </div>
                 <p className="mt-0.5 text-[10px] text-slate-400 break-words leading-tight">
                   {shortest?.average_congestion !== null
-                    ? comparison?.primary_traffic_source === 'simulated'
-                      ? `Simulated estimate from Electronic City dataset across ${shortest.matched_traffic_edges_count} covered segments (not live camera)`
-                      : `Estimated across ${shortest.matched_traffic_edges_count} covered segments`
-                    : 'Unmonitored segments have unknown traffic; not zero'}
+                    ? (comparison?.primary_traffic_source === 'tomtom' || shortest?.traffic_source === 'tomtom')
+                      ? `Real-time probe speed reduction across ${shortest.matched_traffic_edges_count} matched road segments`
+                      : comparison?.primary_traffic_source === 'simulated'
+                        ? `Simulated estimate from Electronic City dataset across ${shortest.matched_traffic_edges_count} covered segments (not live camera)`
+                        : `Estimated across ${shortest.matched_traffic_edges_count} covered segments`
+                    : 'Unmonitored segments have unknown traffic; baseline distance applied'}
                 </p>
               </div>
             </div>
@@ -331,30 +373,40 @@ export default function RouteResultCards({ comparison, route }) {
                 <span className="text-slate-500">Traffic-monitored segments</span>
                 <span className="font-medium text-slate-800 shrink-0">
                   {trafficAware?.matched_traffic_edges_count} of {trafficAware?.edges_count}
+                  {trafficAware?.tomtom_matched_edges_count > 0 && (
+                    <span className="ml-1 text-[10px] text-emerald-700 font-bold">
+                      ({trafficAware.tomtom_matched_edges_count} TomTom live)
+                    </span>
+                  )}
                   {trafficAware?.vision_matched_edges_count > 0 && (
                     <span className="ml-1 text-[10px] text-indigo-600 font-bold">
                       ({trafficAware.vision_matched_edges_count} vision)
                     </span>
                   )}
+                  {trafficAware?.simulated_matched_edges_count > 0 && (
+                    <span className="ml-1 text-[10px] text-slate-600 font-medium">
+                      ({trafficAware.simulated_matched_edges_count} simulated)
+                    </span>
+                  )}
                 </span>
               </div>
 
-              {/* Staircase & obstacle segment indicators
-              <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-xs min-w-0">
-                <span className="text-slate-500">Stairs / Barriers</span>
-                <span className={`font-medium shrink-0 ${trafficAware?.steps_count === 0 && isStepFree ? 'text-emerald-700 font-bold' : 'text-slate-800'}`}>
-                  {trafficAware?.steps_count ?? 0} stairs, {trafficAware?.obstacles_count ?? 0} obstacles
-                </span>
-              </div>
-                 */}
+              {trafficAware?.unmatched_edges_count > 0 && (
+                <div className="text-[11px] text-slate-400">
+                  {trafficAware.unmatched_edges_count} unmonitored / pedestrian segments (distance-only)
+                </div>
+              )}
+
               <div className="rounded-lg bg-emerald-50/50 border border-emerald-100 p-2 text-xs max-w-full min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 min-w-0">
                   <span className="text-emerald-900 font-medium">
-                    {comparison?.primary_traffic_source === 'simulated' || trafficAware?.traffic_source === 'simulated'
-                      ? 'Average congestion (Simulated Dataset)'
-                      : comparison?.primary_traffic_source === 'vision' || trafficAware?.traffic_source === 'vision'
-                        ? 'Average congestion (Vision Traffic)'
-                        : 'Average monitored congestion'}
+                    {comparison?.primary_traffic_source === 'tomtom' || trafficAware?.traffic_source === 'tomtom'
+                      ? 'Average congestion (TomTom Real-Time)'
+                      : comparison?.primary_traffic_source === 'simulated' || trafficAware?.traffic_source === 'simulated'
+                        ? 'Average congestion (Simulated Dataset)'
+                        : comparison?.primary_traffic_source === 'vision' || trafficAware?.traffic_source === 'vision'
+                          ? 'Average congestion (Vision Traffic)'
+                          : 'Average monitored congestion'}
                   </span>
                   <span className="font-bold text-emerald-700 shrink-0">
                     {trafficAware?.average_congestion !== null
@@ -364,10 +416,12 @@ export default function RouteResultCards({ comparison, route }) {
                 </div>
                 <p className="mt-0.5 text-[10px] text-emerald-700/70 break-words leading-tight">
                   {trafficAware?.average_congestion !== null
-                    ? (comparison?.primary_traffic_source === 'simulated' || trafficAware?.traffic_source === 'simulated')
-                      ? `Simulated estimate from Electronic City dataset across ${trafficAware.matched_traffic_edges_count} covered segments (not live camera)`
-                      : `Estimated across ${trafficAware.matched_traffic_edges_count} covered segments`
-                    : 'Unmonitored segments have unknown traffic; not zero'}
+                    ? (comparison?.primary_traffic_source === 'tomtom' || trafficAware?.traffic_source === 'tomtom')
+                      ? `Real-time probe speed reduction across ${trafficAware.matched_traffic_edges_count} matched road segments`
+                      : (comparison?.primary_traffic_source === 'simulated' || trafficAware?.traffic_source === 'simulated')
+                        ? `Simulated estimate from Electronic City dataset across ${trafficAware.matched_traffic_edges_count} covered segments (not live camera)`
+                        : `Estimated across ${trafficAware.matched_traffic_edges_count} covered segments`
+                    : 'Unmonitored segments have unknown traffic; baseline distance applied'}
                 </p>
               </div>
             </div>
@@ -375,14 +429,29 @@ export default function RouteResultCards({ comparison, route }) {
         </div>
       </div>
 
-      {/* Accessibility Disclaimer Notice */}
+      {/* Stale Network Cache Alert */}
+      {comparison?.network_is_stale && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 max-w-full min-w-0">
+          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 shrink-0" />
+          <div className="leading-relaxed">
+            <strong className="text-amber-900">Cached Map Notice:</strong>{' '}
+            Live OpenStreetMap servers were temporarily unreachable or at capacity. Route was safely calculated using local cached network geometry.
+          </div>
+        </div>
+      )}
+
+      {/* Accessibility & Traffic Provider Scope Disclaimer Notice */}
       <div className="flex items-start gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 max-w-full min-w-0">
         <ShieldAlert className="h-4 w-4 text-slate-400 mt-0.5 shrink-0" />
-        <p className="leading-relaxed">
-          <strong className="text-slate-700">Accessibility & Traffic Data Scope:</strong>{' '}
-          Accessibility coverage is incomplete; missing obstacle information does not mean a route is accessible.
-          Vehicular traffic data uses the simulated Electronic City dataset fallback unless a calibrated vision observation is active.
-        </p>
+        <div className="leading-relaxed space-y-1">
+          <p>
+            <strong className="text-slate-700">Traffic Data & Accessibility Scope:</strong>{' '}
+            TomTom Traffic Flow API measures <em>motor-vehicle traffic speeds</em> on vehicular roadways; it does not measure pedestrian sidewalk crowding, footpath accessibility, or pedestrian walkability.
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Dedicated footways, staircases, and pedestrian paths have zero motor traffic and are evaluated on physical distance and accessibility barriers. Simulated Electronic City dataset fallback is used when live traffic observations are unavailable.
+          </p>
+        </div>
       </div>
 
       {/* Technical Cost Breakdown Accordion */}
@@ -424,6 +493,18 @@ export default function RouteResultCards({ comparison, route }) {
               <div>
                 <strong>Primary Traffic Source:</strong>{' '}
                 <span className="font-mono">{comparison.primary_traffic_source}</span>
+              </div>
+              <div>
+                <strong>TomTom Matched Edges:</strong>{' '}
+                <span>
+                  {trafficAware?.tomtom_matched_edges_count ?? 0} (Recommended) / {shortest?.tomtom_matched_edges_count ?? 0} (Shortest)
+                </span>
+              </div>
+              <div>
+                <strong>Simulated Fallback Edges:</strong>{' '}
+                <span>
+                  {trafficAware?.simulated_matched_edges_count ?? 0} (Recommended) / {shortest?.simulated_matched_edges_count ?? 0} (Shortest)
+                </span>
               </div>
               <div>
                 <strong>Vision Adapter Active Observation:</strong>{' '}

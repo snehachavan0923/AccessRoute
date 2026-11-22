@@ -7,6 +7,7 @@ import math
 import os
 from pathlib import Path
 import pickle
+import random
 import threading
 import time
 from typing import Protocol
@@ -45,11 +46,16 @@ class NetworkBounds:
             and self.west <= other.west
         )
 
-    def to_normalized_grid(self, grid_size: float = 0.01) -> NetworkBounds:
+    def to_normalized_grid(self, grid_size: float | None = None) -> NetworkBounds:
         """Snap bounds outward to a regular grid to maximize cache hits.
 
-        Grid resolution default is 0.01 degrees (~1.1 km).
+        Grid resolution default is adaptive: 0.005 degrees (~550m) for small areas,
+        or 0.01 degrees (~1.1 km) for larger areas.
         """
+        if grid_size is None:
+            lat_span = abs(self.north - self.south)
+            lon_span = abs(self.east - self.west)
+            grid_size = 0.005 if (lat_span < 0.02 and lon_span < 0.02) else 0.01
         south = round(math.floor(self.south / grid_size) * grid_size, 4)
         north = round(math.ceil(self.north / grid_size) * grid_size, 4)
         west = round(math.floor(self.west / grid_size) * grid_size, 4)
@@ -100,6 +106,7 @@ class PedestrianGraphCache:
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        self._stale_hits = 0
 
     @property
     def hits(self) -> int:
@@ -111,12 +118,35 @@ class PedestrianGraphCache:
         with self._lock:
             return self._misses
 
-    def __len__(self) -> int:
+    @property
+    def stale_hits(self) -> int:
         with self._lock:
-            return len(self._cache)
+            return self._stale_hits
+
+    def __len__(self) -> int:
+        now = time.monotonic()
+        with self._lock:
+            return sum(
+                1 for _, _, created_at in self._cache.values()
+                if now - created_at <= self.ttl_seconds
+            )
 
     def _disk_path(self, key: tuple[float, float, float, float]) -> Path:
         return self._disk_cache_dir / f"graph_{key[0]}_{key[1]}_{key[2]}_{key[3]}.pkl"
+
+    @staticmethod
+    def _parse_disk_bounds(filename: str) -> NetworkBounds | None:
+        if not (filename.startswith("graph_") and filename.endswith(".pkl")):
+            return None
+        core = filename[6:-4]
+        parts = core.split("_")
+        if len(parts) != 4:
+            return None
+        try:
+            north, south, east, west = (float(p) for p in parts)
+            return NetworkBounds(north=north, south=south, east=east, west=west)
+        except ValueError:
+            return None
 
     def get(self, bounds: NetworkBounds) -> MultiDiGraph | None:
         """Retrieve a cached graph matching the exact key or enclosing the requested bounds."""
@@ -132,19 +162,15 @@ class PedestrianGraphCache:
                     self._cache.move_to_end(norm_key)
                     self._hits += 1
                     return graph.copy()
-                del self._cache[norm_key]
 
             # 2. Spatial containment check in RAM: is requested bounds within any cached graph?
             for key, (graph, entry_bounds, created_at) in list(self._cache.items()):
-                if now - created_at > self.ttl_seconds:
-                    del self._cache[key]
-                    continue
-                if entry_bounds.contains(bounds):
+                if now - created_at <= self.ttl_seconds and entry_bounds.contains(bounds):
                     self._cache.move_to_end(key)
                     self._hits += 1
                     return graph.copy()
 
-            # 3. Disk cache check
+            # 3. Disk cache check (exact key first, then spatial containment)
             if self.enable_disk_cache and self._disk_cache_dir.exists():
                 disk_file = self._disk_path(norm_key)
                 if disk_file.exists():
@@ -160,6 +186,24 @@ class PedestrianGraphCache:
                                 return loaded_graph.copy()
                     except Exception:
                         pass
+
+                # Scan persisted disk graph files for spatial containment
+                for pkl_file in self._disk_cache_dir.glob("graph_*.pkl"):
+                    disk_bounds = self._parse_disk_bounds(pkl_file.name)
+                    if disk_bounds is not None and disk_bounds.contains(bounds):
+                        try:
+                            mtime = pkl_file.stat().st_mtime
+                            if time.time() - mtime <= self.ttl_seconds:
+                                with open(pkl_file, "rb") as f:
+                                    loaded_graph = pickle.load(f)
+                                if isinstance(loaded_graph, MultiDiGraph) and loaded_graph.number_of_nodes() > 0:
+                                    d_key = disk_bounds.to_key()
+                                    self._cache[d_key] = (loaded_graph, disk_bounds, now)
+                                    self._cache.move_to_end(d_key)
+                                    self._hits += 1
+                                    return loaded_graph.copy()
+                        except Exception:
+                            continue
 
             # 4. Check OSMnx HTTP cache for existing enclosing response files
             if self.enable_disk_cache:
@@ -193,6 +237,75 @@ class PedestrianGraphCache:
                             continue
 
             self._misses += 1
+            return None
+
+    def get_stale(self, bounds: NetworkBounds) -> MultiDiGraph | None:
+        """Retrieve an expired cached graph that encloses the requested bounds as an emergency fallback.
+
+        Graph is annotated with is_stale=True so consumers can explicitly notify the user.
+        """
+        now = time.monotonic()
+        with self._lock:
+            # 1. RAM scan (ignoring TTL)
+            for key, (graph, entry_bounds, created_at) in list(self._cache.items()):
+                if entry_bounds.contains(bounds):
+                    stale_copy = graph.copy()
+                    stale_copy.graph["is_stale"] = True
+                    stale_copy.graph["stale_cached_at"] = created_at
+                    self._stale_hits += 1
+                    return stale_copy
+
+            # 2. Disk scan (ignoring TTL)
+            if self.enable_disk_cache and self._disk_cache_dir.exists():
+                for pkl_file in self._disk_cache_dir.glob("graph_*.pkl"):
+                    disk_bounds = self._parse_disk_bounds(pkl_file.name)
+                    if disk_bounds is not None and disk_bounds.contains(bounds):
+                        try:
+                            mtime = pkl_file.stat().st_mtime
+                            with open(pkl_file, "rb") as f:
+                                loaded_graph = pickle.load(f)
+                            if isinstance(loaded_graph, MultiDiGraph) and loaded_graph.number_of_nodes() > 0:
+                                loaded_graph.graph["is_stale"] = True
+                                loaded_graph.graph["stale_cached_at"] = mtime
+                                self._cache[disk_bounds.to_key()] = (loaded_graph, disk_bounds, now)
+                                self._stale_hits += 1
+                                return loaded_graph.copy()
+                        except Exception:
+                            continue
+
+            # 3. OSMnx JSON cache check (ignoring TTL)
+            if self.enable_disk_cache:
+                osmnx_cache = _resolve_cache_path("ROUTING_OSMNX_CACHE_DIR", "./cache")
+                if osmnx_cache.exists():
+                    for json_file in osmnx_cache.glob("*.json"):
+                        try:
+                            with open(json_file, "r", encoding="utf-8") as fp:
+                                d = json.load(fp)
+                            elements = d.get("elements", [])
+                            nodes = [e for e in elements if e.get("type") == "node" and "lat" in e]
+                            if not nodes:
+                                continue
+                            f_bounds = NetworkBounds(
+                                north=max(n["lat"] for n in nodes),
+                                south=min(n["lat"] for n in nodes),
+                                east=max(n["lon"] for n in nodes),
+                                west=min(n["lon"] for n in nodes),
+                            )
+                            if f_bounds.contains(bounds):
+                                loaded_graph = ox.graph._create_graph([d], bidirectional=True)
+                                if loaded_graph.number_of_nodes() > 0:
+                                    loaded_graph.graph["is_stale"] = True
+                                    loaded_graph.graph["stale_cached_at"] = json_file.stat().st_mtime
+                                    self._cache[f_bounds.to_normalized_grid().to_key()] = (
+                                        loaded_graph,
+                                        f_bounds,
+                                        now,
+                                    )
+                                    self._stale_hits += 1
+                                    return loaded_graph.copy()
+                        except Exception:
+                            continue
+
             return None
 
     def put(self, bounds: NetworkBounds, graph: MultiDiGraph) -> None:
@@ -238,6 +351,7 @@ class PedestrianGraphCache:
             self._cache.clear()
             self._hits = 0
             self._misses = 0
+            self._stale_hits = 0
             if self.enable_disk_cache and self._disk_cache_dir.exists():
                 for pkl_file in self._disk_cache_dir.glob("graph_*.pkl"):
                     try:
@@ -252,18 +366,37 @@ class PedestrianGraphCache:
                 "max_size": self.max_size,
                 "hits": self._hits,
                 "misses": self._misses,
+                "stale_hits": self._stale_hits,
                 "ttl_seconds": self.ttl_seconds,
             }
 
 
+DEFAULT_OVERPASS_ENDPOINTS: list[str] = [
+    "https://overpass-api.de/api",
+    "https://overpass.kumi.systems/api",
+    "https://maps.mail.ru/osm/tools/overpass/api",
+]
+
+
 class OSMnxPedestrianNetworkProvider:
-    """Fetches walkable pedestrian networks via OSMnx with timeout and User-Agent configuration."""
+    """Fetches walkable pedestrian networks via OSMnx with retry backoff, jitter, and endpoint failover."""
 
     def __init__(self) -> None:
+        self.endpoints = self._resolve_endpoints()
+        self.max_retries = int(os.environ.get("ROUTING_OVERPASS_MAX_RETRIES", "2"))
+        self._current_endpoint_index = 0
         self._configure_osmnx()
 
     @staticmethod
-    def _configure_osmnx() -> None:
+    def _resolve_endpoints() -> list[str]:
+        raw = os.environ.get("ROUTING_OVERPASS_ENDPOINTS", "")
+        if raw.strip():
+            parsed = [ep.strip() for ep in raw.split(",") if ep.strip()]
+            if parsed:
+                return parsed
+        return list(DEFAULT_OVERPASS_ENDPOINTS)
+
+    def _configure_osmnx(self) -> None:
         ox.settings.http_user_agent = os.environ.get(
             "ROUTING_OSMNX_USER_AGENT",
             "OSMnx/2.0.1 (https://github.com/gboeing/osmnx)",
@@ -272,34 +405,74 @@ class OSMnxPedestrianNetworkProvider:
         ox.settings.use_cache = True
         cache_dir = _resolve_cache_path("ROUTING_OSMNX_CACHE_DIR", "./cache")
         ox.settings.cache_folder = str(cache_dir)
+        current_endpoint = self.endpoints[self._current_endpoint_index % len(self.endpoints)]
+        ox.settings.overpass_url = current_endpoint
+
+    def _backoff_sleep(self, delay: float) -> None:
+        time.sleep(delay)
 
     def load(self, bounds: NetworkBounds) -> MultiDiGraph:
         self._configure_osmnx()
-        try:
-            return ox.graph_from_bbox(
-                (bounds.west, bounds.south, bounds.east, bounds.north),
-                network_type="walk",
+        total_attempts = 1 + max(0, self.max_retries)
+        last_error: Exception | None = None
+
+        for attempt in range(total_attempts):
+            endpoint_idx = (self._current_endpoint_index + attempt) % len(self.endpoints)
+            endpoint = self.endpoints[endpoint_idx]
+            ox.settings.overpass_url = endpoint
+
+            try:
+                graph = ox.graph_from_bbox(
+                    (bounds.west, bounds.south, bounds.east, bounds.north),
+                    network_type="walk",
+                )
+                if graph is not None and graph.number_of_nodes() > 0:
+                    self._current_endpoint_index = endpoint_idx
+                    return graph
+                raise NetworkDownloadError("OpenStreetMap returned an empty pedestrian graph.")
+            except (
+                InsufficientResponseError,
+                ResponseStatusCodeError,
+                RequestException,
+                TimeoutError,
+            ) as error:
+                last_error = error
+                error_msg = str(error)
+                is_transient = (
+                    isinstance(error, (TimeoutError, RequestException, InsufficientResponseError))
+                    or "502" in error_msg
+                    or "503" in error_msg
+                    or "504" in error_msg
+                    or "429" in error_msg
+                    or "Gateway" in error_msg
+                    or "capacity" in error_msg
+                    or "timeout" in error_msg.lower()
+                )
+
+                if is_transient and attempt < total_attempts - 1:
+                    jitter = random.uniform(0.1, 0.4)
+                    delay = (1.0 * (1.5 ** attempt)) + jitter
+                    self._backoff_sleep(delay)
+                    continue
+                break
+
+        error_msg = str(last_error) if last_error else "unknown error"
+        if "502" in error_msg or "Gateway" in error_msg or "capacity" in error_msg:
+            detail = (
+                "OpenStreetMap Overpass server is temporarily busy or rate-limited. "
+                "Please wait a moment and retry."
             )
-        except (
-            InsufficientResponseError,
-            ResponseStatusCodeError,
-            RequestException,
-            TimeoutError,
-        ) as error:
-            error_msg = str(error)
-            if "502" in error_msg or "Gateway" in error_msg or "capacity" in error_msg:
-                detail = (
-                    "OpenStreetMap Overpass server is temporarily busy or rate-limited. "
-                    "Please wait a moment and retry."
-                )
-            elif isinstance(error, (TimeoutError, RequestException)) and "timeout" in error_msg.lower():
-                detail = (
-                    "OpenStreetMap network request timed out. "
-                    "The selected area may be too large or the server is congested."
-                )
-            else:
-                detail = "OpenStreetMap pedestrian network data is unavailable."
-            raise NetworkDownloadError(detail) from error
+        elif (
+            isinstance(last_error, (TimeoutError, RequestException))
+            and "timeout" in error_msg.lower()
+        ):
+            detail = (
+                "OpenStreetMap network request timed out. "
+                "The selected area may be too large or the server is congested."
+            )
+        else:
+            detail = "OpenStreetMap pedestrian network data is unavailable."
+        raise NetworkDownloadError(detail) from last_error
 
 
 class CachedPedestrianNetworkProvider:
@@ -310,8 +483,8 @@ class CachedPedestrianNetworkProvider:
         provider: PedestrianNetworkProvider | None = None,
         cache: PedestrianGraphCache | None = None,
     ) -> None:
-        self._underlying = provider or OSMnxPedestrianNetworkProvider()
-        self._cache = cache or PedestrianGraphCache()
+        self._underlying = provider if provider is not None else OSMnxPedestrianNetworkProvider()
+        self._cache = cache if cache is not None else PedestrianGraphCache()
         self._inflight: dict[tuple[float, float, float, float], threading.Event] = {}
         self._inflight_lock = threading.Lock()
 
@@ -339,19 +512,35 @@ class CachedPedestrianNetworkProvider:
                 is_initiator = False
 
         if not is_initiator:
-            # Wait for the initiating thread to finish downloading
-            event.wait(timeout=35.0)
+            # Wait for the initiating thread to finish downloading (timeout synced with OSMnx timeout)
+            osmnx_timeout = float(os.environ.get("ROUTING_OSMNX_TIMEOUT", "90"))
+            event.wait(timeout=osmnx_timeout + 15.0)
             cached_graph = self._cache.get(bounds)
             if cached_graph is not None:
                 return cached_graph
+            # Check stale cache before attempting duplicate network load
+            stale_graph = self._cache.get_stale(bounds)
+            if stale_graph is not None:
+                return stale_graph
             # If still not in cache, fallback to loading directly
-            return self._underlying.load(bounds)
+            try:
+                return self._underlying.load(bounds)
+            except NetworkDownloadError:
+                stale_fallback = self._cache.get_stale(bounds)
+                if stale_fallback is not None:
+                    return stale_fallback
+                raise
 
         try:
             # 3. Load using normalized bounds so future sub-queries can be served from cache
             graph = self._underlying.load(norm_bounds)
             self._cache.put(norm_bounds, graph)
             return graph.copy()
+        except NetworkDownloadError:
+            stale_graph = self._cache.get_stale(bounds)
+            if stale_graph is not None:
+                return stale_graph
+            raise
         finally:
             with self._inflight_lock:
                 event.set()

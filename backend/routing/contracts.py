@@ -17,15 +17,19 @@ class RouteCandidate:
     matched_traffic_edges_count: int = 0
     traffic_coverage_percent: float = 0.0
     average_congestion: float | None = None
-    traffic_source: str = "simulated"  # "simulated", "vision", "mixed", "none"
+    traffic_source: str = "simulated"  # "simulated", "vision", "tomtom", "mixed", "none"
     vision_matched_edges_count: int = 0
     simulated_matched_edges_count: int = 0
+    tomtom_matched_edges_count: int = 0
+    unmatched_edges_count: int = 0
+    road_closures_count: int = 0
     steps_count: int = 0
     unpaved_edges_count: int = 0
     obstacles_count: int = 0
     traffic_cost_penalty: float = 0.0
     accessibility_cost_penalty: float = 0.0
     accessibility_constraints_applied: tuple[str, ...] = ()
+    network_is_stale: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,10 +46,11 @@ class RouteComparison:
         "Traffic values are synthetically simulated for Electronic City, Bengaluru, "
         "and do not represent real-time sensor measurements or guaranteed pedestrian safety."
     )
-    primary_traffic_source: str = "simulated"  # "simulated", "vision", "mixed", "none"
+    primary_traffic_source: str = "simulated"  # "simulated", "vision", "tomtom", "mixed", "none"
     vision_observation_active: bool = False
     accessibility_mode: str = "standard"  # "standard" | "step_free"
     explanation: str = ""
+    network_is_stale: bool = False
 
 
 @dataclass(frozen=True)

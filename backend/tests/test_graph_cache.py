@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import concurrent.futures
+from pathlib import Path
+import shutil
+import tempfile
 import time
 import unittest
 from unittest.mock import Mock, patch
 
 import networkx as nx
 from networkx import MultiDiGraph
+from osmnx._errors import ResponseStatusCodeError
 
 from backend.pedestrian_network import (
     CachedPedestrianNetworkProvider,
     NetworkBounds,
     NetworkDownloadError,
+    OSMnxPedestrianNetworkProvider,
     PedestrianGraphCache,
     get_default_network_provider,
 )
@@ -20,6 +25,7 @@ from backend.routing.shortest_path import (
     NetworkAreaSettings,
     NetworkAreaTooLargeError,
     ShortestPathService,
+    calculate_network_bounds,
 )
 from backend.routing.traffic_aware_path import (
     TrafficAwarePathService,
@@ -225,6 +231,140 @@ class RouteComparisonPerformanceTests(unittest.TestCase):
             self.assertEqual(comparison.status, "partial_shortest_only")
             self.assertIsNotNone(comparison.shortest_distance)
             self.assertGreater(comparison.shortest_distance.distance_meters, 0)
+
+
+class OSMnxProviderReliabilityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.bounds = NetworkBounds(north=12.85, south=12.83, east=77.68, west=77.66)
+        self.graph = create_synthetic_grid_graph()
+
+    @patch("backend.pedestrian_network.provider.ox.graph_from_bbox")
+    def test_retry_with_backoff_on_transient_overpass_error(self, mock_graph_bbox: Mock) -> None:
+        provider = OSMnxPedestrianNetworkProvider()
+        mock_graph_bbox.side_effect = [
+            ResponseStatusCodeError("502 Server Error: Bad Gateway"),
+            self.graph,
+        ]
+
+        with patch.object(provider, "_backoff_sleep") as mock_sleep:
+            result = provider.load(self.bounds)
+            self.assertEqual(result.number_of_nodes(), self.graph.number_of_nodes())
+            self.assertEqual(mock_graph_bbox.call_count, 2)
+            self.assertEqual(mock_sleep.call_count, 1)
+
+    @patch("backend.pedestrian_network.provider.ox.graph_from_bbox")
+    def test_endpoint_rotation_failover(self, mock_graph_bbox: Mock) -> None:
+        provider = OSMnxPedestrianNetworkProvider()
+        endpoints_contacted = []
+
+        def record_endpoint_call(*args, **kwargs):
+            import osmnx as ox
+            endpoints_contacted.append(ox.settings.overpass_url)
+            if len(endpoints_contacted) < 3:
+                raise ResponseStatusCodeError("504 Gateway Timeout")
+            return self.graph
+
+        mock_graph_bbox.side_effect = record_endpoint_call
+
+        with patch.object(provider, "_backoff_sleep"):
+            result = provider.load(self.bounds)
+            self.assertEqual(result.number_of_nodes(), self.graph.number_of_nodes())
+            self.assertGreaterEqual(len(endpoints_contacted), 3)
+            self.assertNotEqual(endpoints_contacted[0], endpoints_contacted[1])
+
+    @patch("backend.pedestrian_network.provider.ox.graph_from_bbox")
+    def test_exhausted_retries_raises_network_download_error(self, mock_graph_bbox: Mock) -> None:
+        provider = OSMnxPedestrianNetworkProvider()
+        mock_graph_bbox.side_effect = ResponseStatusCodeError("502 Bad Gateway")
+
+        with patch.object(provider, "_backoff_sleep"):
+            with self.assertRaises(NetworkDownloadError) as ctx:
+                provider.load(self.bounds)
+            self.assertIn("temporarily busy or rate-limited", str(ctx.exception))
+
+
+class DiskContainmentAndStaleFallbackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp()
+        self.bounds = NetworkBounds(north=12.85, south=12.83, east=77.68, west=77.66)
+        self.sub_bounds = NetworkBounds(north=12.845, south=12.835, east=77.675, west=77.665)
+        self.graph = create_synthetic_grid_graph()
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_disk_spatial_containment_reuses_enclosing_persisted_graph(self) -> None:
+        with patch.dict("os.environ", {"ROUTING_GRAPH_DISK_CACHE_DIR": self.temp_dir}):
+            cache1 = PedestrianGraphCache(ttl_seconds=3600.0, enable_disk_cache=True)
+            cache1.put(self.bounds, self.graph)
+
+            # Create a completely fresh cache instance with empty RAM
+            cache2 = PedestrianGraphCache(ttl_seconds=3600.0, enable_disk_cache=True)
+            self.assertEqual(len(cache2), 0)
+
+            # Query sub_bounds (which is strictly inside self.bounds on disk)
+            retrieved = cache2.get(self.sub_bounds)
+            self.assertIsNotNone(retrieved)
+            self.assertEqual(retrieved.number_of_nodes(), self.graph.number_of_nodes())
+            self.assertEqual(cache2.hits, 1)
+
+    def test_stale_cache_fallback_when_fresh_download_fails(self) -> None:
+        mock_provider = Mock()
+        mock_provider.load.side_effect = NetworkDownloadError("Overpass is down")
+
+        cache = PedestrianGraphCache(ttl_seconds=0.01)
+        cache.put(self.bounds, self.graph)
+        time.sleep(0.03)
+
+        self.assertIsNone(cache.get(self.bounds))
+
+        cached_provider = CachedPedestrianNetworkProvider(provider=mock_provider, cache=cache)
+        stale_graph = cached_provider.load(self.bounds)
+        self.assertIsNotNone(stale_graph)
+        self.assertTrue(stale_graph.graph.get("is_stale", False))
+
+    def test_route_comparison_with_stale_network_exposes_disclaimer_and_flags(self) -> None:
+        stale_graph = create_synthetic_grid_graph()
+        stale_graph.graph["is_stale"] = True
+
+        mock_provider = Mock()
+        mock_provider.load.return_value = stale_graph
+
+        service = TrafficRouteComparisonService(
+            network_provider=mock_provider,
+            settings=NetworkAreaSettings(buffer_meters=100.0, max_diagonal_meters=5000.0),
+        )
+
+        origin = Coordinate(latitude=12.8385, longitude=77.6658)
+        dest = Coordinate(latitude=12.8450, longitude=77.6750)
+
+        comparison = service.compare(origin, dest)
+        self.assertTrue(comparison.network_is_stale)
+        self.assertTrue(comparison.shortest_distance.network_is_stale)
+        self.assertTrue(comparison.traffic_accessibility_aware.network_is_stale)
+        self.assertIn("cached OpenStreetMap network data", comparison.disclaimer)
+        self.assertIn("Cached Network Notice", comparison.explanation)
+
+    def test_adaptive_buffer_reduces_query_area_for_short_walks(self) -> None:
+        origin = Coordinate(latitude=12.8385, longitude=77.6658)
+        dest = Coordinate(latitude=12.8425, longitude=77.6700)
+
+        fixed_settings = NetworkAreaSettings(buffer_meters=1000.0, adaptive=False)
+        fixed_bounds = calculate_network_bounds(origin, dest, fixed_settings)
+        fixed_lat_span = fixed_bounds.north - fixed_bounds.south
+        fixed_lon_span = fixed_bounds.east - fixed_bounds.west
+
+        adaptive_settings = NetworkAreaSettings(
+            buffer_meters=1000.0, min_buffer_meters=350.0, adaptive=True
+        )
+        adaptive_bounds = calculate_network_bounds(origin, dest, adaptive_settings)
+        adaptive_lat_span = adaptive_bounds.north - adaptive_bounds.south
+        adaptive_lon_span = adaptive_bounds.east - adaptive_bounds.west
+
+        self.assertLess(adaptive_lat_span, fixed_lat_span)
+        self.assertLess(adaptive_lon_span, fixed_lon_span)
+        self.assertLess(adaptive_bounds.south, origin.latitude)
+        self.assertGreater(adaptive_bounds.north, dest.latitude)
 
 
 if __name__ == "__main__":

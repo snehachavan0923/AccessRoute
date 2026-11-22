@@ -31,12 +31,16 @@ class RouteNotFoundError(LookupError):
 @dataclass(frozen=True)
 class NetworkAreaSettings:
     buffer_meters: float = 1_000
+    min_buffer_meters: float = 350.0
+    adaptive: bool = True
     max_diagonal_meters: float = 20_000
 
     def __post_init__(self) -> None:
         if (
             not isfinite(self.buffer_meters)
             or self.buffer_meters <= 0
+            or not isfinite(self.min_buffer_meters)
+            or self.min_buffer_meters <= 0
             or not isfinite(self.max_diagonal_meters)
             or self.max_diagonal_meters <= 0
         ):
@@ -46,6 +50,8 @@ class NetworkAreaSettings:
     def from_environment(cls) -> "NetworkAreaSettings":
         return cls(
             buffer_meters=float(environ.get("ROUTING_NETWORK_BUFFER_METERS", "1000")),
+            min_buffer_meters=float(environ.get("ROUTING_MIN_NETWORK_BUFFER_METERS", "350")),
+            adaptive=environ.get("ROUTING_ADAPTIVE_BUFFER", "true").lower() in ("true", "1", "yes"),
             max_diagonal_meters=float(
                 environ.get("ROUTING_MAX_NETWORK_DIAGONAL_METERS", "20000")
             ),
@@ -59,16 +65,32 @@ def calculate_network_bounds(
 ) -> NetworkBounds:
     latitudes = (origin.latitude, destination.latitude)
     longitudes = (origin.longitude, destination.longitude)
-    latitude_padding = settings.buffer_meters / METERS_PER_DEGREE_LATITUDE
-    north = min(90, max(latitudes) + latitude_padding)
-    south = max(-90, min(latitudes) - latitude_padding)
+
+    if settings.adaptive:
+        # Scale buffer with walking distance to avoid downloading massive areas for short walks
+        avg_lat = radians((origin.latitude + destination.latitude) / 2.0)
+        meters_per_deg_lon = METERS_PER_DEGREE_LATITUDE * max(cos(avg_lat), 0.01)
+        delta_y = (destination.latitude - origin.latitude) * METERS_PER_DEGREE_LATITUDE
+        delta_x = (destination.longitude - origin.longitude) * meters_per_deg_lon
+        straight_line_dist = hypot(delta_x, delta_y)
+
+        effective_buffer = max(
+            settings.min_buffer_meters,
+            min(settings.buffer_meters, settings.min_buffer_meters + straight_line_dist * 0.25),
+        )
+    else:
+        effective_buffer = settings.buffer_meters
+
+    latitude_padding = effective_buffer / METERS_PER_DEGREE_LATITUDE
+    north = min(90.0, max(latitudes) + latitude_padding)
+    south = max(-90.0, min(latitudes) - latitude_padding)
 
     longitude_reference = max(abs(south), abs(north))
     meters_per_degree_longitude = METERS_PER_DEGREE_LATITUDE * max(
         cos(radians(longitude_reference)),
         0.01,
     )
-    longitude_padding = settings.buffer_meters / meters_per_degree_longitude
+    longitude_padding = effective_buffer / meters_per_degree_longitude
     west = min(longitudes) - longitude_padding
     east = max(longitudes) + longitude_padding
 

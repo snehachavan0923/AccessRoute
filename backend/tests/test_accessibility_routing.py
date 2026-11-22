@@ -223,7 +223,10 @@ class TestStepFreeStaircaseRouting(unittest.TestCase):
         self.assertAlmostEqual(
             res.traffic_accessibility_aware.distance_meters, 100.0
         )
-        self.assertIn(res.status, ("identical_routes", "traffic_dataset_unavailable"))
+        self.assertIn(
+            res.status,
+            ("identical_routes", "traffic_dataset_unavailable", "no_traffic_coverage_in_area"),
+        )
         self.assertEqual(res.traffic_accessibility_aware.steps_count, 1)
 
 

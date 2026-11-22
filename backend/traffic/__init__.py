@@ -5,6 +5,14 @@ from .loader import (
     TrafficEdgeKey,
     TrafficSnapshot,
 )
+from .tomtom_adapter import (
+    TomTomMatchResult,
+    TomTomObservation,
+    TomTomTrafficAdapter,
+    get_default_tomtom_adapter,
+    is_suitable_motor_road,
+    set_default_tomtom_adapter,
+)
 from .vision_adapter import (
     ObservationValidationStatus,
     VisionTrafficAdapter,
@@ -14,12 +22,18 @@ from .vision_adapter import (
 
 __all__ = [
     "ObservationValidationStatus",
+    "TomTomMatchResult",
+    "TomTomObservation",
+    "TomTomTrafficAdapter",
     "TrafficDataset",
     "TrafficDatasetError",
     "TrafficDatasetInfo",
     "TrafficEdgeKey",
     "TrafficSnapshot",
     "VisionTrafficAdapter",
+    "get_default_tomtom_adapter",
     "get_default_vision_adapter",
+    "is_suitable_motor_road",
+    "set_default_tomtom_adapter",
     "set_default_vision_adapter",
 ]

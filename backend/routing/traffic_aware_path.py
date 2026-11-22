@@ -3,7 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from math import hypot
-from typing import Sequence
+import os
+from typing import Any, Sequence
 
 import networkx as nx
 
@@ -33,11 +34,14 @@ from backend.routing.shortest_path import (
     nearest_network_node,
 )
 from backend.traffic import (
+    TomTomTrafficAdapter,
     TrafficDataset,
     TrafficDatasetError,
     TrafficEdgeKey,
     VisionTrafficAdapter,
+    get_default_tomtom_adapter,
     get_default_vision_adapter,
+    is_suitable_motor_road,
 )
 
 COST_FORMULA_DOCUMENTATION = (
@@ -67,6 +71,9 @@ class PathGeometryMetrics:
     average_congestion: float
     vision_matched_count: int = 0
     simulated_matched_count: int = 0
+    tomtom_matched_count: int = 0
+    unmatched_count: int = 0
+    road_closures_count: int = 0
     steps_count: int = 0
     unpaved_count: int = 0
     obstacles_count: int = 0
@@ -106,6 +113,8 @@ def extract_path_geometry_and_metrics(
     congestion_sum = 0.0
     vision_matched_count = 0
     simulated_matched_count = 0
+    tomtom_matched_count = 0
+    road_closures_count = 0
     steps_count = 0
     unpaved_count = 0
     obstacles_count = 0
@@ -139,10 +148,16 @@ def extract_path_geometry_and_metrics(
         if best_edge.get("traffic_matched", False):
             matched_edges_count += 1
             congestion_sum += float(best_edge.get("traffic_congestion", 0.0))
-            if best_edge.get("traffic_source") == "vision":
+            source_type = best_edge.get("traffic_source")
+            if source_type == "vision":
                 vision_matched_count += 1
-            elif best_edge.get("traffic_source") == "simulated":
+            elif source_type == "tomtom":
+                tomtom_matched_count += 1
+            elif source_type == "simulated":
                 simulated_matched_count += 1
+
+        if best_edge.get("traffic_road_closed", False):
+            road_closures_count += 1
 
         if best_edge.get("is_steps", False):
             steps_count += 1
@@ -197,12 +212,20 @@ def extract_path_geometry_and_metrics(
         congestion_sum / matched_edges_count if matched_edges_count > 0 else 0.0
     )
 
-    if vision_matched_count > 0 and simulated_matched_count == 0:
-        overall_traffic_source = "vision"
-    elif vision_matched_count > 0 and simulated_matched_count > 0:
+    unmatched_count = max(0, edges_count - matched_edges_count)
+
+    active_sources = []
+    if vision_matched_count > 0:
+        active_sources.append("vision")
+    if tomtom_matched_count > 0:
+        active_sources.append("tomtom")
+    if simulated_matched_count > 0:
+        active_sources.append("simulated")
+
+    if len(active_sources) > 1:
         overall_traffic_source = "mixed"
-    elif simulated_matched_count > 0:
-        overall_traffic_source = "simulated"
+    elif len(active_sources) == 1:
+        overall_traffic_source = active_sources[0]
     else:
         overall_traffic_source = "none"
 
@@ -215,6 +238,9 @@ def extract_path_geometry_and_metrics(
         average_congestion=avg_congestion,
         vision_matched_count=vision_matched_count,
         simulated_matched_count=simulated_matched_count,
+        tomtom_matched_count=tomtom_matched_count,
+        unmatched_count=unmatched_count,
+        road_closures_count=road_closures_count,
         steps_count=steps_count,
         unpaved_count=unpaved_count,
         obstacles_count=obstacles_count,
@@ -227,6 +253,7 @@ def extract_path_geometry_and_metrics(
 def metrics_to_candidate(
     metrics: PathGeometryMetrics,
     applied_constraints: tuple[str, ...] = (),
+    network_is_stale: bool = False,
 ) -> RouteCandidate:
     """Convert extracted path metrics to a public RouteCandidate."""
     coverage_pct = (
@@ -249,12 +276,16 @@ def metrics_to_candidate(
         traffic_source=metrics.traffic_source,
         vision_matched_edges_count=metrics.vision_matched_count,
         simulated_matched_edges_count=metrics.simulated_matched_count,
+        tomtom_matched_edges_count=metrics.tomtom_matched_count,
+        unmatched_edges_count=metrics.unmatched_count,
+        road_closures_count=metrics.road_closures_count,
         steps_count=metrics.steps_count,
         unpaved_edges_count=metrics.unpaved_count,
         obstacles_count=metrics.obstacles_count,
         traffic_cost_penalty=round(metrics.traffic_cost_penalty, 2),
         accessibility_cost_penalty=round(metrics.accessibility_cost_penalty, 2),
         accessibility_constraints_applied=applied_constraints,
+        network_is_stale=network_is_stale,
     )
 
 
@@ -268,6 +299,7 @@ class TrafficAwarePathService:
         settings: NetworkAreaSettings | None = None,
         vision_adapter: VisionTrafficAdapter | None = None,
         accessibility_adapter: AccessibilityAdapter | None = None,
+        tomtom_adapter: TomTomTrafficAdapter | None = None,
     ) -> None:
         self._network_provider = network_provider or get_default_network_provider()
         self._settings = settings or NetworkAreaSettings.from_environment()
@@ -282,6 +314,11 @@ class TrafficAwarePathService:
             accessibility_adapter
             if accessibility_adapter is not None
             else get_default_accessibility_adapter()
+        )
+        self._tomtom_adapter: TomTomTrafficAdapter = (
+            tomtom_adapter
+            if tomtom_adapter is not None
+            else get_default_tomtom_adapter()
         )
 
         if self._dataset is None:
@@ -301,6 +338,10 @@ class TrafficAwarePathService:
     @property
     def vision_adapter(self) -> VisionTrafficAdapter:
         return self._vision_adapter
+
+    @property
+    def tomtom_adapter(self) -> TomTomTrafficAdapter:
+        return self._tomtom_adapter
 
     @property
     def accessibility_adapter(self) -> AccessibilityAdapter:
@@ -369,17 +410,41 @@ class TrafficAwarePathService:
         # Work on a copy to avoid mutating external graph instances
         working_graph = graph.copy()
 
-        # Annotate edges with traffic and accessibility costs
+        origin_node = nearest_network_node(working_graph, origin)
+        destination_node = nearest_network_node(working_graph, destination)
+
+        # 1. First calculate shortest path on pure physical distance to identify candidate route edges
+        target_tomtom_edges: set[tuple[Any, Any, Any]] = set()
+        try:
+            from itertools import islice
+            candidate_paths = list(islice(
+                nx.shortest_simple_paths(working_graph, origin_node, destination_node, weight="length"),
+                2
+            ))
+            for path in candidate_paths:
+                for u, v in zip(path, path[1:]):
+                    e_dict = working_graph.get_edge_data(u, v)
+                    if e_dict:
+                        best_k = min(e_dict.keys(), key=lambda k: e_dict[k].get("length", 1.0))
+                        if is_suitable_motor_road(e_dict[best_k]):
+                            target_tomtom_edges.add((u, v, best_k))
+                            if len(target_tomtom_edges) >= 20:
+                                break
+                if len(target_tomtom_edges) >= 20:
+                    break
+        except Exception:
+            pass
+
+        # 2. Annotate edges with traffic and accessibility costs, querying TomTom only for candidate route edges
         self._apply_traffic_weights(
             working_graph,
             selected_time_index=selected_time_index,
             traffic_weight=traffic_weight,
             accessibility_mode=accessibility_mode,
+            target_tomtom_edges=target_tomtom_edges if target_tomtom_edges else None,
         )
 
         try:
-            origin_node = nearest_network_node(working_graph, origin)
-            destination_node = nearest_network_node(working_graph, destination)
             node_path = nx.shortest_path(
                 working_graph,
                 source=origin_node,
@@ -434,8 +499,23 @@ class TrafficAwarePathService:
         selected_time_index: int,
         traffic_weight: float,
         accessibility_mode: str = "standard",
+        target_tomtom_edges: set[tuple[Any, Any, Any]] | None = None,
+        max_tomtom_queries: int | None = None,
     ) -> None:
-        """Assign nonnegative routing cost to every edge in the graph combining traffic and accessibility."""
+        """Assign nonnegative routing cost to every edge in the graph combining traffic and accessibility.
+
+        To protect API budgets and performance:
+        - If target_tomtom_edges is provided, external TomTom requests are ONLY attempted for those edges.
+        - Cache hits cost 0 new requests.
+        - The number of new external queries in a single invocation is bounded by max_tomtom_queries (default: 20).
+        """
+        max_queries = (
+            max_tomtom_queries
+            if max_tomtom_queries is not None
+            else int(os.environ.get("TOMTOM_MAX_QUERIES_PER_ROUTE", "20"))
+        )
+        tomtom_new_queries_count = 0
+
         for u, v, key, data in graph.edges(keys=True, data=True):
             length = max(0.1, float(data.get("length", 1.0)))
             matched = False
@@ -449,6 +529,9 @@ class TrafficAwarePathService:
             if self._vision_adapter is not None:
                 vision_congestion = self._vision_adapter.get_congestion_index(traffic_key)
 
+            is_closed = False
+            closure_penalty = 0.0
+
             if (
                 vision_congestion is not None
                 and math.isfinite(vision_congestion)
@@ -457,8 +540,67 @@ class TrafficAwarePathService:
                 congestion = float(vision_congestion)
                 matched = True
                 traffic_source = "vision"
+            elif (
+                self._tomtom_adapter is not None
+                and self._tomtom_adapter.is_available
+                and is_suitable_motor_road(data)
+                and (target_tomtom_edges is None or (u, v, key) in target_tomtom_edges)
+            ):
+                # 2. Consult TomTom adapter for live motor-vehicle traffic flow
+                source_coord = (float(graph.nodes[u]["y"]), float(graph.nodes[u]["x"]))
+                target_coord = (float(graph.nodes[v]["y"]), float(graph.nodes[v]["x"]))
+
+                # Check cache first without counting towards new query budget
+                mid_lat = (source_coord[0] + target_coord[0]) / 2.0
+                mid_lon = (source_coord[1] + target_coord[1]) / 2.0
+                geometry = data.get("geometry")
+                if geometry is not None and hasattr(geometry, "coords") and len(geometry.coords) > 1:
+                    coords = list(geometry.coords)
+                    mid_idx = len(coords) // 2
+                    mid_lon, mid_lat = coords[mid_idx]
+
+                cache_key = (round(mid_lat, 4), round(mid_lon, 4))
+                is_cached = self._tomtom_adapter._get_from_cache(cache_key) is not None
+
+                if is_cached or tomtom_new_queries_count < max_queries:
+                    if not is_cached:
+                        tomtom_new_queries_count += 1
+                    tt_match = self._tomtom_adapter.get_edge_observation(data, source_coord, target_coord)
+                    if tt_match.matched and tt_match.observation is not None:
+                        congestion = float(tt_match.observation.congestion_index)
+                        matched = True
+                        traffic_source = "tomtom"
+                        is_closed = bool(tt_match.observation.road_closure)
+                        if is_closed:
+                            # Road closure on vehicle road: heavily penalize to discourage pedestrian transit along/across blocked motor roads
+                            closure_penalty = length * 500.0
+                    elif self._dataset is not None and self._dataset.has_edge(traffic_key):
+                        # Fallback to simulated dataset if TomTom did not match
+                        try:
+                            snap = self._dataset.get_snapshot(traffic_key, selected_time_index)
+                            raw_congestion = float(snap.congestion_index)
+                            if math.isfinite(raw_congestion) and raw_congestion >= 0.0:
+                                congestion = raw_congestion
+                                matched = True
+                                traffic_source = "simulated"
+                        except TrafficDatasetError:
+                            congestion = 0.0
+                            matched = False
+                            traffic_source = "none"
+                elif self._dataset is not None and self._dataset.has_edge(traffic_key):
+                    try:
+                        snap = self._dataset.get_snapshot(traffic_key, selected_time_index)
+                        raw_congestion = float(snap.congestion_index)
+                        if math.isfinite(raw_congestion) and raw_congestion >= 0.0:
+                            congestion = raw_congestion
+                            matched = True
+                            traffic_source = "simulated"
+                    except TrafficDatasetError:
+                        congestion = 0.0
+                        matched = False
+                        traffic_source = "none"
             elif self._dataset is not None and self._dataset.has_edge(traffic_key):
-                # 2. Transparent fallback to simulated traffic dataset
+                # 3. Transparent fallback to simulated traffic dataset
                 try:
                     snap = self._dataset.get_snapshot(traffic_key, selected_time_index)
                     raw_congestion = float(snap.congestion_index)
@@ -471,7 +613,7 @@ class TrafficAwarePathService:
                     matched = False
                     traffic_source = "none"
 
-            # 3. Accessibility constraints and penalties
+            # 4. Accessibility constraints and penalties
             highway = str(data.get("highway", "")).lower()
             surface = str(data.get("surface", "")).lower()
             is_steps = (highway == "steps" or str(data.get("stairs", "")).lower() == "yes")
@@ -501,13 +643,15 @@ class TrafficAwarePathService:
             traffic_penalty = length * traffic_weight * congestion
 
             # Total cost: strictly nonnegative
-            cost = length + traffic_penalty + accessibility_penalty
+            cost = length + traffic_penalty + accessibility_penalty + closure_penalty
 
             data["traffic_cost"] = float(cost)
             data["traffic_matched"] = matched
             data["traffic_source"] = traffic_source
             data["traffic_congestion"] = float(congestion)
             data["traffic_penalty"] = float(traffic_penalty)
+            data["traffic_road_closed"] = is_closed
+            data["closure_penalty"] = float(closure_penalty)
             data["is_steps"] = is_steps
             data["is_unpaved"] = is_unpaved
             data["has_obstacle"] = (obstacle is not None)
@@ -525,6 +669,7 @@ class TrafficRouteComparisonService:
         settings: NetworkAreaSettings | None = None,
         vision_adapter: VisionTrafficAdapter | None = None,
         accessibility_adapter: AccessibilityAdapter | None = None,
+        tomtom_adapter: TomTomTrafficAdapter | None = None,
     ) -> None:
         self._network_provider = network_provider or get_default_network_provider()
         self._settings = settings or NetworkAreaSettings.from_environment()
@@ -538,17 +683,27 @@ class TrafficRouteComparisonService:
             if accessibility_adapter is not None
             else get_default_accessibility_adapter()
         )
+        self._tomtom_adapter: TomTomTrafficAdapter = (
+            tomtom_adapter
+            if tomtom_adapter is not None
+            else get_default_tomtom_adapter()
+        )
         self._traffic_service = TrafficAwarePathService(
             network_provider=self._network_provider,
             traffic_dataset=traffic_dataset,
             settings=self._settings,
             vision_adapter=self._vision_adapter,
             accessibility_adapter=self._accessibility_adapter,
+            tomtom_adapter=self._tomtom_adapter,
         )
 
     @property
     def vision_adapter(self) -> VisionTrafficAdapter:
         return self._vision_adapter
+
+    @property
+    def tomtom_adapter(self) -> TomTomTrafficAdapter:
+        return self._tomtom_adapter
 
     @property
     def accessibility_adapter(self) -> AccessibilityAdapter:
@@ -588,22 +743,12 @@ class TrafficRouteComparisonService:
             )
 
         working_graph = graph.copy()
-        traffic_weighting_failed = False
-        try:
-            self._traffic_service._apply_traffic_weights(
-                working_graph,
-                selected_time_index=selected_time_index,
-                traffic_weight=traffic_weight,
-                accessibility_mode=accessibility_mode,
-            )
-        except Exception:
-            traffic_weighting_failed = True
 
         try:
             origin_node = nearest_network_node(working_graph, origin)
             destination_node = nearest_network_node(working_graph, destination)
 
-            # 1. Shortest distance path (weight="length")
+            # 1. Pure physical distance shortest path (weight="length") calculated first
             shortest_node_path = nx.shortest_path(
                 working_graph,
                 source=origin_node,
@@ -620,7 +765,50 @@ class TrafficRouteComparisonService:
                 "The pedestrian network data could not be processed."
             ) from error
 
-        # 2. Traffic-aware path (weight="traffic_cost") with graceful partial fallback
+        # 2. Identify eligible motor-road edges on the selected shortest route and candidate alternatives (capped at 20 edges)
+        target_tomtom_edges: set[tuple[Any, Any, Any]] = set()
+        # Always include shortest path edges first
+        for u, v in zip(shortest_node_path, shortest_node_path[1:]):
+            edge_dict = working_graph.get_edge_data(u, v)
+            if edge_dict:
+                best_k = min(edge_dict.keys(), key=lambda k: edge_dict[k].get("length", 1.0))
+                if is_suitable_motor_road(edge_dict[best_k]):
+                    target_tomtom_edges.add((u, v, best_k))
+                    if len(target_tomtom_edges) >= 20:
+                        break
+
+        # If budget permits, include candidate alternative path edges so alternatives can be traffic-evaluated
+        if len(target_tomtom_edges) < 20:
+            try:
+                from itertools import islice
+                for alt_path in islice(nx.shortest_simple_paths(working_graph, origin_node, destination_node, weight="length"), 1, 3):
+                    for u, v in zip(alt_path, alt_path[1:]):
+                        edge_dict = working_graph.get_edge_data(u, v)
+                        if edge_dict:
+                            best_k = min(edge_dict.keys(), key=lambda k: edge_dict[k].get("length", 1.0))
+                            if is_suitable_motor_road(edge_dict[best_k]):
+                                target_tomtom_edges.add((u, v, best_k))
+                                if len(target_tomtom_edges) >= 20:
+                                    break
+                    if len(target_tomtom_edges) >= 20:
+                        break
+            except Exception:
+                pass
+
+        # 3. Apply traffic and accessibility costs, querying TomTom only for candidate route edges
+        traffic_weighting_failed = False
+        try:
+            self._traffic_service._apply_traffic_weights(
+                working_graph,
+                selected_time_index=selected_time_index,
+                traffic_weight=traffic_weight,
+                accessibility_mode=accessibility_mode,
+                target_tomtom_edges=target_tomtom_edges,
+            )
+        except Exception:
+            traffic_weighting_failed = True
+
+        # 4. Traffic-aware path (weight="traffic_cost") with graceful partial fallback
         traffic_routing_failed = traffic_weighting_failed
         if not traffic_weighting_failed:
             try:
@@ -643,6 +831,8 @@ class TrafficRouteComparisonService:
             else ()
         )
 
+        is_stale_network = bool(working_graph.graph.get("is_stale", False))
+
         # Extract shortest route metrics under the same traffic conditions
         shortest_metrics = extract_path_geometry_and_metrics(
             working_graph,
@@ -650,7 +840,9 @@ class TrafficRouteComparisonService:
             edge_selection_attribute="length",
         )
         shortest_candidate = metrics_to_candidate(
-            shortest_metrics, applied_constraints=()
+            shortest_metrics,
+            applied_constraints=(),
+            network_is_stale=is_stale_network,
         )
 
         # Extract traffic-aware route metrics
@@ -660,7 +852,9 @@ class TrafficRouteComparisonService:
             edge_selection_attribute="traffic_cost",
         )
         traffic_candidate = metrics_to_candidate(
-            traffic_metrics, applied_constraints=applied_constraints
+            traffic_metrics,
+            applied_constraints=applied_constraints,
+            network_is_stale=is_stale_network,
         )
 
         origin_node_data = working_graph.nodes[origin_node]
@@ -705,17 +899,27 @@ class TrafficRouteComparisonService:
             traffic_candidate.vision_matched_edges_count > 0
             or shortest_candidate.vision_matched_edges_count > 0
         )
+        has_tomtom = (
+            traffic_candidate.tomtom_matched_edges_count > 0
+            or shortest_candidate.tomtom_matched_edges_count > 0
+        )
         has_simulated = (
             traffic_candidate.simulated_matched_edges_count > 0
             or shortest_candidate.simulated_matched_edges_count > 0
         )
 
-        if has_vision and has_simulated:
+        sources_present = []
+        if has_vision:
+            sources_present.append("vision")
+        if has_tomtom:
+            sources_present.append("tomtom")
+        if has_simulated:
+            sources_present.append("simulated")
+
+        if len(sources_present) > 1:
             primary_traffic_source = "mixed"
-        elif has_vision:
-            primary_traffic_source = "vision"
-        elif has_simulated:
-            primary_traffic_source = "simulated"
+        elif len(sources_present) == 1:
+            primary_traffic_source = sources_present[0]
         else:
             primary_traffic_source = "none"
 
@@ -747,6 +951,11 @@ class TrafficRouteComparisonService:
             ):
                 reasons.append("bypasses verified physical barriers")
             if (
+                (shortest_candidate.road_closures_count > 0 and traffic_candidate.road_closures_count == 0)
+                or traffic_candidate.road_closures_count > 0
+            ):
+                reasons.append("accounts for reported road closures")
+            if (
                 shortest_candidate.average_congestion or 0.0
             ) > (traffic_candidate.average_congestion or 0.0):
                 reasons.append("avoids vehicle traffic congestion")
@@ -768,22 +977,71 @@ class TrafficRouteComparisonService:
             explanation_parts.append(
                 f"Validated computer vision traffic observation active on {v_count} corridor segment(s)."
             )
-        elif (
+        if (
+            traffic_candidate.tomtom_matched_edges_count > 0
+            or shortest_candidate.tomtom_matched_edges_count > 0
+        ):
+            tt_count = max(
+                traffic_candidate.tomtom_matched_edges_count,
+                shortest_candidate.tomtom_matched_edges_count,
+            )
+            explanation_parts.append(
+                f"Real-time TomTom motor-vehicle traffic flow active on {tt_count} corridor segment(s)."
+            )
+        if (
             traffic_candidate.simulated_matched_edges_count > 0
             or shortest_candidate.simulated_matched_edges_count > 0
         ):
             explanation_parts.append(
                 "Traffic impedance calculated from simulated Electronic City traffic dataset fallback."
             )
-        else:
+        if not sources_present:
             explanation_parts.append("No traffic observations matched this path corridor.")
+
+        if (
+            traffic_candidate.road_closures_count > 0
+            or shortest_candidate.road_closures_count > 0
+        ):
+            total_closures = max(
+                traffic_candidate.road_closures_count,
+                shortest_candidate.road_closures_count,
+            )
+            explanation_parts.append(
+                f"Warning: {total_closures} motor-vehicle road closure condition(s) detected along corridor."
+            )
 
         if accessibility_mode == "step_free":
             explanation_parts.append(
                 "Step-free mobility constraints applied (stairs and verified obstacles penalized)."
             )
 
+        if is_stale_network:
+            explanation_parts.append(
+                "[Cached Network Notice: OpenStreetMap server was temporarily unavailable. "
+                "Route was safely calculated using local cached network geometry.]"
+            )
+
         explanation = " ".join(explanation_parts)
+
+        if primary_traffic_source == "tomtom":
+            disclaimer = (
+                "Vehicular traffic data provided by TomTom Traffic Flow API. "
+                "Note: TomTom measures motor-vehicle road speeds and does not represent "
+                "pedestrian sidewalk crowding or footpath safety."
+            )
+        elif primary_traffic_source == "mixed":
+            disclaimer = (
+                "Route combines live TomTom traffic, computer-vision observations, "
+                "and/or simulated dataset fallback across corridor segments."
+            )
+        else:
+            disclaimer = SIMULATED_TRAFFIC_DISCLAIMER
+
+        if is_stale_network:
+            disclaimer += (
+                " [Notice: Live map updates are temporarily unavailable; "
+                "pedestrian route calculated using cached OpenStreetMap network data.]"
+            )
 
         return RouteComparison(
             shortest_distance=shortest_candidate,
@@ -794,9 +1052,10 @@ class TrafficRouteComparisonService:
             time_index=selected_time_index,
             cost_formula=COST_FORMULA_DOCUMENTATION,
             status=status,
-            disclaimer=SIMULATED_TRAFFIC_DISCLAIMER,
+            disclaimer=disclaimer,
             primary_traffic_source=primary_traffic_source,
             vision_observation_active=vision_active,
             accessibility_mode=accessibility_mode,
             explanation=explanation,
+            network_is_stale=is_stale_network,
         )
