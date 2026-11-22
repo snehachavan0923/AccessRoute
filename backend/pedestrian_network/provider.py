@@ -70,6 +70,95 @@ class PedestrianNetworkProvider(Protocol):
     def load(self, bounds: NetworkBounds) -> MultiDiGraph: ...
 
 
+INACCESSIBLE_MOTOR_HIGHWAYS = frozenset({
+    "motorway",
+    "motorway_link",
+    "trunk",
+    "trunk_link",
+    "primary",
+    "primary_link",
+})
+
+PEDESTRIAN_EXPLICIT_ACCESS_VALUES = frozenset({
+    "yes",
+    "designated",
+    "permissive",
+    "both",
+    "left",
+    "right",
+    "separate",
+})
+
+PEDESTRIAN_DEDICATED_HIGHWAYS = frozenset({
+    "footway",
+    "pedestrian",
+    "path",
+    "steps",
+    "corridor",
+    "living_street",
+    "cycleway",
+    "track",
+    "bridleway",
+})
+
+
+def is_inaccessible_elevated_motor_edge(data: dict) -> bool:
+    """Returns True if an edge represents an elevated/bridge motor road span without pedestrian access."""
+    hw = data.get("highway")
+    hws = hw if isinstance(hw, list) else [hw] if hw else []
+    # Dedicated pedestrian highway types are always walkable (e.g. footbridges)
+    if any(h in PEDESTRIAN_DEDICATED_HIGHWAYS for h in hws):
+        return False
+
+    # Only filter high-speed / arterial motor road types
+    if not any(h in INACCESSIBLE_MOTOR_HIGHWAYS for h in hws):
+        return False
+
+    bridge = data.get("bridge")
+    is_bridge = bridge is not None and str(bridge).lower() not in ("no", "0", "false")
+
+    layer = data.get("layer")
+    try:
+        is_elevated_layer = layer is not None and float(layer) > 0
+    except (ValueError, TypeError):
+        is_elevated_layer = False
+
+    if not (is_bridge or is_elevated_layer):
+        return False
+
+    # Check for explicit pedestrian access
+    foot = str(data.get("foot", "")).lower()
+    sidewalk = str(data.get("sidewalk", "")).lower()
+    pedestrian = str(data.get("pedestrian", "")).lower()
+    if (
+        foot in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+        or sidewalk in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+        or pedestrian in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+    ):
+        return False
+
+    return True
+
+
+def prune_inaccessible_elevated_edges(graph: MultiDiGraph) -> MultiDiGraph:
+    """Prunes inaccessible elevated/bridge motor road edges while preserving pedestrian-accessible bridges.
+
+    Also removes isolated nodes left behind after pruning.
+    """
+    edges_to_remove = [
+        (u, v, k)
+        for u, v, k, d in graph.edges(keys=True, data=True)
+        if is_inaccessible_elevated_motor_edge(d)
+    ]
+    if edges_to_remove:
+        for u, v, k in edges_to_remove:
+            graph.remove_edge(u, v, key=k)
+        isolated = list(nx.isolates(graph))
+        if isolated:
+            graph.remove_nodes_from(isolated)
+    return graph
+
+
 class NetworkDownloadError(Exception):
     pass
 
@@ -180,6 +269,7 @@ class PedestrianGraphCache:
                             with open(disk_file, "rb") as f:
                                 loaded_graph = pickle.load(f)
                             if isinstance(loaded_graph, MultiDiGraph) and loaded_graph.number_of_nodes() > 0:
+                                loaded_graph = prune_inaccessible_elevated_edges(loaded_graph)
                                 self._cache[norm_key] = (loaded_graph, norm_bounds, now)
                                 self._cache.move_to_end(norm_key)
                                 self._hits += 1
@@ -197,6 +287,7 @@ class PedestrianGraphCache:
                                 with open(pkl_file, "rb") as f:
                                     loaded_graph = pickle.load(f)
                                 if isinstance(loaded_graph, MultiDiGraph) and loaded_graph.number_of_nodes() > 0:
+                                    loaded_graph = prune_inaccessible_elevated_edges(loaded_graph)
                                     d_key = disk_bounds.to_key()
                                     self._cache[d_key] = (loaded_graph, disk_bounds, now)
                                     self._cache.move_to_end(d_key)
@@ -226,6 +317,7 @@ class PedestrianGraphCache:
                             if f_bounds.contains(bounds):
                                 loaded_graph = ox.graph._create_graph([d], bidirectional=True)
                                 if loaded_graph.number_of_nodes() > 0:
+                                    loaded_graph = prune_inaccessible_elevated_edges(loaded_graph)
                                     self._cache[f_bounds.to_normalized_grid().to_key()] = (
                                         loaded_graph,
                                         f_bounds,
@@ -265,6 +357,7 @@ class PedestrianGraphCache:
                             with open(pkl_file, "rb") as f:
                                 loaded_graph = pickle.load(f)
                             if isinstance(loaded_graph, MultiDiGraph) and loaded_graph.number_of_nodes() > 0:
+                                loaded_graph = prune_inaccessible_elevated_edges(loaded_graph)
                                 loaded_graph.graph["is_stale"] = True
                                 loaded_graph.graph["stale_cached_at"] = mtime
                                 self._cache[disk_bounds.to_key()] = (loaded_graph, disk_bounds, now)
@@ -294,6 +387,7 @@ class PedestrianGraphCache:
                             if f_bounds.contains(bounds):
                                 loaded_graph = ox.graph._create_graph([d], bidirectional=True)
                                 if loaded_graph.number_of_nodes() > 0:
+                                    loaded_graph = prune_inaccessible_elevated_edges(loaded_graph)
                                     loaded_graph.graph["is_stale"] = True
                                     loaded_graph.graph["stale_cached_at"] = json_file.stat().st_mtime
                                     self._cache[f_bounds.to_normalized_grid().to_key()] = (
@@ -330,7 +424,7 @@ class PedestrianGraphCache:
             if len(self._cache) >= self.max_size and key not in self._cache:
                 self._cache.popitem(last=False)
 
-            cached_copy = graph.copy()
+            cached_copy = prune_inaccessible_elevated_edges(graph.copy())
             self._cache[key] = (cached_copy, norm_bounds, now)
             self._cache.move_to_end(key)
 
@@ -427,6 +521,7 @@ class OSMnxPedestrianNetworkProvider:
                     network_type="walk",
                 )
                 if graph is not None and graph.number_of_nodes() > 0:
+                    graph = prune_inaccessible_elevated_edges(graph)
                     self._current_endpoint_index = endpoint_idx
                     return graph
                 raise NetworkDownloadError("OpenStreetMap returned an empty pedestrian graph.")

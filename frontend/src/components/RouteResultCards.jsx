@@ -400,11 +400,11 @@ export default function RouteResultCards({ comparison, route }) {
               <div className="rounded-lg bg-emerald-50/50 border border-emerald-100 p-2 text-xs max-w-full min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 min-w-0">
                   <span className="text-emerald-900 font-medium">
-                    {comparison?.primary_traffic_source === 'tomtom' || trafficAware?.traffic_source === 'tomtom'
+                    {trafficAware?.traffic_source === 'tomtom'
                       ? 'Average congestion (TomTom Real-Time)'
-                      : comparison?.primary_traffic_source === 'simulated' || trafficAware?.traffic_source === 'simulated'
+                      : trafficAware?.traffic_source === 'simulated'
                         ? 'Average congestion (Simulated Dataset)'
-                        : comparison?.primary_traffic_source === 'vision' || trafficAware?.traffic_source === 'vision'
+                        : trafficAware?.traffic_source === 'vision'
                           ? 'Average congestion (Vision Traffic)'
                           : 'Average monitored congestion'}
                   </span>

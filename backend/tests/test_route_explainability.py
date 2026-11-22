@@ -26,6 +26,9 @@ from backend.routing.traffic_aware_path import (
     TrafficRouteComparisonService,
 )
 from backend.traffic import (
+    TomTomMatchResult,
+    TomTomObservation,
+    TomTomTrafficAdapter,
     TrafficEdgeKey,
     VisionTrafficAdapter,
     set_default_vision_adapter,
@@ -177,6 +180,103 @@ class TestRouteExplainability(unittest.TestCase):
         self.assertIsNotNone(obs_item)
         self.assertEqual(obs_item["camera_id"], "cam-test")
         self.assertEqual(obs_item["experimental_congestion_index"], 0.75)
+
+    def test_mg_road_attribution_shortest_tomtom_recommended_diverts_to_footways(self) -> None:
+        """When shortest route has TomTom congestion and recommended route diverts onto footways,
+
+        source attribution must distinguish per-route sources and clearly explain the diversion.
+        """
+        mock_tomtom = Mock(spec=TomTomTrafficAdapter)
+        mock_tomtom.is_available = True
+
+        def mock_match(edge_data, src, tgt):
+            hw = edge_data.get("highway")
+            if hw == "residential":
+                obs = TomTomObservation(
+                    current_speed_kmh=10.0,
+                    free_flow_speed_kmh=50.0,
+                    current_travel_time=150.0,
+                    free_flow_travel_time=30.0,
+                    confidence=1.0,
+                    road_closure=False,
+                    frc="FRC3",
+                    congestion_index=0.80,
+                    coordinates=((12.840, 77.670), (12.840, 77.671)),
+                    fetched_at=1000.0,
+                )
+                return TomTomMatchResult(matched=True, observation=obs)
+            return TomTomMatchResult(matched=False, observation=None)
+
+        mock_tomtom.get_edge_observation.side_effect = mock_match
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.network_provider,
+            traffic_dataset=None,
+            vision_adapter=None,
+            tomtom_adapter=mock_tomtom,
+        )
+
+        res = service.compare(self.origin, self.destination, traffic_weight=2.0)
+
+        # Baseline shortest path cost: 200m + traffic penalty (80% congestion)
+        # Detour path cost: 240m on footway with 0 traffic penalty
+        self.assertEqual(res.status, "alternative_found")
+        self.assertAlmostEqual(res.shortest_distance.distance_meters, 200.0)
+        self.assertAlmostEqual(res.traffic_accessibility_aware.distance_meters, 240.0)
+
+        # Shortest route has TomTom matches; recommended route has 0
+        self.assertEqual(res.shortest_distance.tomtom_matched_edges_count, 2)
+        self.assertEqual(res.shortest_distance.traffic_source, "tomtom")
+        self.assertEqual(res.traffic_accessibility_aware.tomtom_matched_edges_count, 0)
+        self.assertEqual(res.traffic_accessibility_aware.traffic_source, "none")
+
+        # Comparison-level primary_traffic_source reflects TomTom because it drove the detour
+        self.assertEqual(res.primary_traffic_source, "tomtom")
+
+        # Explanation must clearly state that alternative diverts onto pedestrian footways
+        self.assertIn("avoids vehicle traffic congestion", res.explanation)
+        self.assertIn(
+            "recommended alternative diverts onto pedestrian footways to avoid traffic observed on the shortest route",
+            res.explanation,
+        )
+        self.assertNotIn("active on 2 recommended corridor segment(s)", res.explanation)
+
+    def test_accurate_per_route_and_comparison_level_source_labels(self) -> None:
+        """Both candidates must accurately state their own traffic_source while comparison states primary_traffic_source."""
+        mock_tomtom = Mock(spec=TomTomTrafficAdapter)
+        mock_tomtom.is_available = True
+
+        def mock_match(edge_data, src, tgt):
+            obs = TomTomObservation(
+                current_speed_kmh=45.0,
+                free_flow_speed_kmh=50.0,
+                current_travel_time=33.0,
+                free_flow_travel_time=30.0,
+                confidence=1.0,
+                road_closure=False,
+                frc="FRC3",
+                congestion_index=0.10,
+                coordinates=((12.840, 77.670), (12.840, 77.671)),
+                fetched_at=1000.0,
+            )
+            return TomTomMatchResult(matched=True, observation=obs)
+
+        mock_tomtom.get_edge_observation.side_effect = mock_match
+
+        service = TrafficRouteComparisonService(
+            network_provider=self.network_provider,
+            traffic_dataset=None,
+            vision_adapter=None,
+            tomtom_adapter=mock_tomtom,
+        )
+
+        # Identical routes when traffic is light
+        res = service.compare(self.origin, self.destination, traffic_weight=0.1)
+        self.assertEqual(res.status, "identical_routes")
+        self.assertEqual(res.shortest_distance.traffic_source, "tomtom")
+        self.assertEqual(res.traffic_accessibility_aware.traffic_source, "tomtom")
+        self.assertEqual(res.primary_traffic_source, "tomtom")
+        self.assertIn("active on 2 corridor segment(s)", res.explanation)
 
 
 if __name__ == "__main__":

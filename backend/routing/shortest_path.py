@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import math
 from math import cos, hypot, isfinite, radians, sin
 from os import environ
 
@@ -10,6 +11,7 @@ from backend.pedestrian_network import (
     OSMnxPedestrianNetworkProvider,
     PedestrianNetworkProvider,
     get_default_network_provider,
+    is_inaccessible_elevated_motor_edge,
 )
 from backend.routing.contracts import Coordinate, ShortestRoute
 
@@ -111,30 +113,140 @@ def calculate_network_bounds(
     return NetworkBounds(north=north, south=south, east=east, west=west)
 
 
+WALKABLE_HIGHWAYS = frozenset({
+    "footway",
+    "pedestrian",
+    "path",
+    "steps",
+    "living_street",
+    "residential",
+    "service",
+    "cycleway",
+    "track",
+    "unclassified",
+    "secondary",
+    "tertiary",
+    "secondary_link",
+    "tertiary_link",
+})
+
+PEDESTRIAN_EXPLICIT_ACCESS_VALUES = frozenset({
+    "yes",
+    "designated",
+    "permissive",
+    "both",
+    "left",
+    "right",
+    "separate",
+})
+
+
+def is_node_pedestrian_preferred(graph: nx.MultiDiGraph, node: int) -> bool:
+    """Evaluates whether a network node has appropriate pedestrian access.
+
+    Returns True if the node is connected to walkable ground-level ways or
+    pedestrian-accessible bridges (footbridges, sidewalks), and False if it is
+    isolated or exclusively connected to inaccessible elevated motor-road spans.
+    """
+    out_edges = graph.edges(node, data=True)
+    in_edges = graph.in_edges(node, data=True)
+    all_edges = list(out_edges) + list(in_edges)
+    if not all_edges:
+        return False
+
+    has_elevated_inaccessible = False
+    has_walkable = False
+
+    for _, _, d in all_edges:
+        if is_inaccessible_elevated_motor_edge(d):
+            has_elevated_inaccessible = True
+            continue
+
+        hw = d.get("highway")
+        hws = hw if isinstance(hw, list) else [hw] if hw else []
+        foot = str(d.get("foot", "")).lower()
+        sidewalk = str(d.get("sidewalk", "")).lower()
+        pedestrian = str(d.get("pedestrian", "")).lower()
+
+        has_explicit_foot = (
+            foot in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+            or sidewalk in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+            or pedestrian in PEDESTRIAN_EXPLICIT_ACCESS_VALUES
+        )
+        is_dedicated_foot = any(h in {"footway", "pedestrian", "path", "steps"} for h in hws)
+
+        if has_explicit_foot or is_dedicated_foot or any(h in WALKABLE_HIGHWAYS for h in hws):
+            has_walkable = True
+
+    if has_walkable and not has_elevated_inaccessible:
+        return True
+    if has_walkable:
+        return True
+    if not has_elevated_inaccessible:
+        return True
+    return False
+
+
 def nearest_network_node(
     graph: nx.MultiDiGraph,
     coordinate: Coordinate,
+    search_radius_meters: float = 100.0,
 ) -> int:
+    """Finds the nearest network node to the given coordinate.
+
+    Prefers ground-level pedestrian nodes over inaccessible elevated flyovers
+    within search_radius_meters. Preserves explicitly pedestrian-accessible
+    bridges, footbridges, and mapped pedestrian connections.
+    """
+    if graph.number_of_nodes() == 0:
+        raise RouteNetworkUnavailableError("The pedestrian network is empty.")
+
     latitude_radians = radians(coordinate.latitude)
     longitude_radians = radians(coordinate.longitude)
 
-    def distance_squared(node_data: dict[str, float]) -> float:
-        node_latitude = radians(float(node_data["y"]))
-        node_longitude = radians(float(node_data["x"]))
-        latitude_delta = node_latitude - latitude_radians
-        longitude_delta = node_longitude - longitude_radians
-        return (
-            sin(latitude_delta / 2) ** 2
-            + cos(latitude_radians)
-            * cos(node_latitude)
-            * sin(longitude_delta / 2) ** 2
+    def haversine_distance_m(node_data: dict[str, float]) -> float:
+        node_lat = radians(float(node_data["y"]))
+        node_lon = radians(float(node_data["x"]))
+        lat_delta = node_lat - latitude_radians
+        lon_delta = node_lon - longitude_radians
+        a = (
+            sin(lat_delta / 2) ** 2
+            + cos(latitude_radians) * cos(node_lat) * sin(lon_delta / 2) ** 2
         )
+        return 2 * 6_371_000 * math.asin(math.sqrt(max(0.0, min(1.0, a))))
 
-    nearest_node, _ = min(
-        graph.nodes(data=True),
-        key=lambda item: distance_squared(item[1]),
-    )
-    return nearest_node
+    node_distances: list[tuple[float, int, dict[str, float]]] = []
+    for node, data in graph.nodes(data=True):
+        dist = haversine_distance_m(data)
+        node_distances.append((dist, node, data))
+
+    node_distances.sort(key=lambda item: item[0])
+
+    # Check candidates within search_radius_meters for pedestrian preference
+    nearby_preferred: list[tuple[float, int]] = []
+    nearby_connected: list[tuple[float, int]] = []
+
+    for dist, node, _ in node_distances:
+        if dist > search_radius_meters:
+            break
+        if graph.degree(node) > 0:
+            nearby_connected.append((dist, node))
+            if is_node_pedestrian_preferred(graph, node):
+                nearby_preferred.append((dist, node))
+
+    if nearby_preferred:
+        return nearby_preferred[0][1]
+
+    if nearby_connected:
+        return nearby_connected[0][1]
+
+    # If no connected node within search_radius_meters, find closest connected node in entire graph
+    for dist, node, _ in node_distances:
+        if graph.degree(node) > 0:
+            return node
+
+    # Final fallback to closest node overall
+    return node_distances[0][1]
 
 
 def build_route_coordinates(

@@ -970,24 +970,56 @@ class TrafficRouteComparisonService:
             traffic_candidate.vision_matched_edges_count > 0
             or shortest_candidate.vision_matched_edges_count > 0
         ):
-            v_count = max(
-                traffic_candidate.vision_matched_edges_count,
-                shortest_candidate.vision_matched_edges_count,
-            )
-            explanation_parts.append(
-                f"Validated computer vision traffic observation active on {v_count} corridor segment(s)."
-            )
+            if (
+                traffic_candidate.vision_matched_edges_count > 0
+                and shortest_candidate.vision_matched_edges_count > 0
+            ):
+                if traffic_candidate.vision_matched_edges_count == shortest_candidate.vision_matched_edges_count:
+                    explanation_parts.append(
+                        f"Validated computer vision traffic observation active on {traffic_candidate.vision_matched_edges_count} corridor segment(s)."
+                    )
+                else:
+                    explanation_parts.append(
+                        f"Validated computer vision traffic observation active on {traffic_candidate.vision_matched_edges_count} recommended corridor segment(s) "
+                        f"({shortest_candidate.vision_matched_edges_count} on shortest route)."
+                    )
+            elif traffic_candidate.vision_matched_edges_count > 0:
+                explanation_parts.append(
+                    f"Validated computer vision traffic observation active on {traffic_candidate.vision_matched_edges_count} corridor segment(s)."
+                )
+            else:
+                explanation_parts.append(
+                    f"Validated computer vision traffic observed on {shortest_candidate.vision_matched_edges_count} segment(s) "
+                    f"of the shortest route; recommended alternative diverts onto unmonitored pedestrian paths to minimize travel cost."
+                )
+
         if (
             traffic_candidate.tomtom_matched_edges_count > 0
             or shortest_candidate.tomtom_matched_edges_count > 0
         ):
-            tt_count = max(
-                traffic_candidate.tomtom_matched_edges_count,
-                shortest_candidate.tomtom_matched_edges_count,
-            )
-            explanation_parts.append(
-                f"Real-time TomTom motor-vehicle traffic flow active on {tt_count} corridor segment(s)."
-            )
+            if (
+                traffic_candidate.tomtom_matched_edges_count > 0
+                and shortest_candidate.tomtom_matched_edges_count > 0
+            ):
+                if traffic_candidate.tomtom_matched_edges_count == shortest_candidate.tomtom_matched_edges_count:
+                    explanation_parts.append(
+                        f"Real-time TomTom motor-vehicle traffic flow active on {traffic_candidate.tomtom_matched_edges_count} corridor segment(s)."
+                    )
+                else:
+                    explanation_parts.append(
+                        f"Real-time TomTom motor-vehicle traffic flow active on {traffic_candidate.tomtom_matched_edges_count} recommended corridor segment(s) "
+                        f"({shortest_candidate.tomtom_matched_edges_count} on shortest route)."
+                    )
+            elif traffic_candidate.tomtom_matched_edges_count > 0:
+                explanation_parts.append(
+                    f"Real-time TomTom motor-vehicle traffic flow active on {traffic_candidate.tomtom_matched_edges_count} corridor segment(s)."
+                )
+            else:
+                explanation_parts.append(
+                    f"Real-time TomTom traffic flow observed on {shortest_candidate.tomtom_matched_edges_count} segment(s) "
+                    f"of the shortest route; recommended alternative diverts onto pedestrian footways to avoid traffic observed on the shortest route."
+                )
+
         if (
             traffic_candidate.simulated_matched_edges_count > 0
             or shortest_candidate.simulated_matched_edges_count > 0
