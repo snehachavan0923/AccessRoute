@@ -23,6 +23,53 @@ For presentation and evaluation, AccessRoute has two demonstrable, fully functio
 
 ---
 
+## Running AccessRoute with GitHub Codespaces
+
+AccessRoute is fully configured for [GitHub Codespaces](https://github.com/features/codespaces). Teammates can launch the entire stack in cloud-hosted Linux containers without installing Python, Node.js, system libraries, or virtual environments locally.
+
+### 1. Launch a Codespace
+1. Navigate to your GitHub repository in your browser.
+2. Click the green **Code** button, select the **Codespaces** tab, and click **Create codespace on main** (or click **+**).
+3. GitHub Codespaces will build the container based on `.devcontainer/devcontainer.json`, which automatically runs `.devcontainer/setup.sh` to:
+   - Configure Python 3.12 and Node.js 22.
+   - Install required Linux multimedia libraries (`ffmpeg`, `libsm6`, `libxext6`).
+   - Create a local virtual environment (`.venv`) and install all backend and vision dependencies.
+   - Install frontend npm packages (`frontend/node_modules`).
+   - Pre-download required neural network weights (`yolo11n.pt`).
+   - Initialize the local SQLite database schema.
+
+### 2. Configure TomTom API Key (Optional Secret)
+If you want live TomTom traffic flow integration instead of fallback traffic data:
+1. In your GitHub repository, go to **Settings** > **Secrets and variables** > **Codespaces**.
+2. Click **New repository secret**.
+3. Name: `TOMTOM_API_KEY`
+4. Value: Your TomTom API key.
+5. Launch or restart your Codespace. The key will be automatically injected into the container environment. If omitted, AccessRoute gracefully falls back to the built-in simulated dataset without crashing.
+
+### 3. Start the Application
+You can start the full stack in any of the following ways:
+
+- **Option A — One-Click Command (Terminal):**
+  ```bash
+  ./start.sh
+  ```
+  *(Press `Ctrl+C` to cleanly stop both backend and frontend servers).*
+
+- **Option B — VS Code Task:**
+  Press `Ctrl+Shift+P` (or `Cmd+Shift+P`), select **Tasks: Run Task**, and choose **Start AccessRoute (All)**.
+
+- **Option C — Manual Terminals:**
+  - Backend: `source .venv/bin/activate && uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload`
+  - Frontend: `npm --prefix frontend run dev -- --host 0.0.0.0`
+
+### 4. Access the Application
+- Codespaces will automatically forward:
+  - **Port 5173** (Vite Frontend): Click the notification or open the **Ports** panel to access the web app.
+  - **Port 8000** (FastAPI Backend & Interactive Swagger Docs at `/docs`).
+- The frontend is preconfigured to route API calls seamlessly through Vite's local proxy to avoid CORS or port conflicts in Codespace browser previews.
+
+---
+
 ## System Requirements & Prerequisites (macOS)
 
 - **Operating System:** macOS Ventura (13+) or newer (Apple Silicon M1/M2/M3/M4 or Intel).

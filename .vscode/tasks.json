@@ -1,0 +1,63 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start AccessRoute (All)",
+      "dependsOn": [
+        "Start Backend",
+        "Start Frontend"
+      ],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Start Backend",
+      "type": "shell",
+      "command": "bash -c 'source .venv/bin/activate 2>/dev/null || true; PYTHONPATH=. uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload'",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^.*$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Uvicorn running on.*$",
+          "endsPattern": "^.*Application startup complete.*$"
+        }
+      }
+    },
+    {
+      "label": "Start Frontend",
+      "type": "shell",
+      "command": "npm --prefix frontend run dev -- --host 0.0.0.0",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^.*$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*VITE.*ready in.*$",
+          "endsPattern": "^.*Local:.*$"
+        }
+      }
+    },
+    {
+      "label": "Run Backend Tests",
+      "type": "shell",
+      "command": "bash -c 'source .venv/bin/activate 2>/dev/null || true; pytest backend/tests/ -v'",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Frontend Lint and Build",
+      "type": "shell",
+      "command": "npm --prefix frontend run lint && npm --prefix frontend run build",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -42,7 +42,7 @@ allowed_origins = list(dict.fromkeys(default_origins + custom_origins))
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$|^https://[a-zA-Z0-9_\-]+\.(app|preview)\.github\.dev$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
