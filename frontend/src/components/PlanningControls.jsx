@@ -192,7 +192,7 @@ export default function PlanningControls({
 
       {/* Unobtrusive Coverage Info & Quick Go to Electronic City action */}
       <div className="flex items-center justify-between rounded-xl border border-slate-200/80 bg-slate-50/60 px-3 py-2 text-[11px] text-slate-500">
-        <span>Dataset covers 602 road sections in Electronic City</span>
+        <span>Electronic City research dataset: 602 road sections</span>
         {onGoToElectronicCity && (
           <button
             type="button"

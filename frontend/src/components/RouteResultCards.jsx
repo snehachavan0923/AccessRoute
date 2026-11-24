@@ -21,21 +21,35 @@ function formatDistance(meters) {
     : `${Math.round(meters)} m`
 }
 
-function getSourceBadge(source) {
+function getSourceBadge(source, monitoredCount, totalCount) {
+  const isPartial =
+    monitoredCount !== undefined &&
+    totalCount !== undefined &&
+    totalCount > 0 &&
+    monitoredCount < totalCount
+
   switch (source) {
     case 'vision':
       return {
-        label: 'Vision-Derived Traffic',
+        label: isPartial
+          ? `Vision Traffic (${monitoredCount}/${totalCount} segments)`
+          : 'Vision-Derived Traffic',
         classes: 'bg-indigo-100 text-indigo-800 border-indigo-200',
         icon: Radio,
-        description: 'Validated computer vision observation active on road segment(s)',
+        description: isPartial
+          ? `Validated computer vision active on ${monitoredCount} of ${totalCount} segments; remaining segments use fallback`
+          : 'Validated computer vision observation active on road segment(s)',
       }
     case 'tomtom':
       return {
-        label: 'Live TomTom Traffic',
+        label: isPartial
+          ? `Live TomTom Traffic (${monitoredCount}/${totalCount} segments)`
+          : 'Live TomTom Traffic',
         classes: 'bg-emerald-100 text-emerald-800 border-emerald-200',
         icon: Globe,
-        description: 'Real-time motor-vehicle traffic flow from TomTom Traffic Flow API',
+        description: isPartial
+          ? `Real-time motor-vehicle traffic flow monitored on ${monitoredCount} of ${totalCount} segments; unmonitored segments use baseline distance`
+          : 'Real-time motor-vehicle traffic flow from TomTom Traffic Flow API',
       }
     case 'mixed':
       return {
@@ -46,14 +60,16 @@ function getSourceBadge(source) {
       }
     case 'simulated':
       return {
-        label: 'Simulated Dataset Fallback',
+        label: isPartial
+          ? `Simulated Dataset (${monitoredCount}/${totalCount} segments)`
+          : 'Simulated Dataset Fallback',
         classes: 'bg-slate-100 text-slate-700 border-slate-200',
         icon: Database,
         description: 'Electronic City synthetic traffic model (camera data uncalibrated or unavailable)',
       }
     default:
       return {
-        label: 'No Traffic Data',
+        label: 'No Traffic Data (Distance Only)',
         classes: 'bg-slate-100 text-slate-600 border-slate-200',
         icon: Info,
         description: 'Traffic unknown for traversed corridor; physical distance applied',
@@ -102,7 +118,11 @@ export default function RouteResultCards({ comparison, route }) {
       ? trafficDist - shortestDist
       : null
 
-  const sourceBadge = getSourceBadge(comparison.primary_traffic_source || trafficAware?.traffic_source)
+  const sourceBadge = getSourceBadge(
+    comparison.primary_traffic_source || trafficAware?.traffic_source,
+    trafficAware?.matched_traffic_edges_count,
+    trafficAware?.edges_count
+  )
   const SourceIcon = sourceBadge.icon
 
   const isStepFree = comparison.accessibility_mode === 'step_free'

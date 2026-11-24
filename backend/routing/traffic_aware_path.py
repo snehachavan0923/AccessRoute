@@ -59,6 +59,41 @@ SIMULATED_TRAFFIC_DISCLAIMER = (
 )
 
 
+def get_candidate_simple_paths(
+    graph: nx.MultiDiGraph,
+    origin_node: int,
+    destination_node: int,
+    max_candidates: int = 3,
+) -> list[list[int]]:
+    """Generates candidate simple paths between origin and destination on a MultiDiGraph.
+
+    NetworkX's shortest_simple_paths does not support MultiDiGraph, so we collapse
+    parallel edges to their minimum physical distance in a simple DiGraph view.
+    """
+    try:
+        simple_g = nx.DiGraph()
+        for u, v, k, data in graph.edges(keys=True, data=True):
+            length = max(0.1, float(data.get("length", 1.0)))
+            if simple_g.has_edge(u, v):
+                if length < simple_g[u][v]["length"]:
+                    simple_g[u][v]["length"] = length
+            else:
+                simple_g.add_edge(u, v, length=length)
+
+        from itertools import islice
+        return list(
+            islice(
+                nx.shortest_simple_paths(simple_g, origin_node, destination_node, weight="length"),
+                max_candidates,
+            )
+        )
+    except Exception:
+        try:
+            return [nx.shortest_path(graph, origin_node, destination_node, weight="length")]
+        except Exception:
+            return []
+
+
 @dataclass(frozen=True)
 class PathGeometryMetrics:
     """Internal container for metrics extracted along a traversed graph node path."""
@@ -419,25 +454,20 @@ class TrafficAwarePathService:
 
         # 1. First calculate shortest path on pure physical distance to identify candidate route edges
         target_tomtom_edges: set[tuple[Any, Any, Any]] = set()
-        try:
-            from itertools import islice
-            candidate_paths = list(islice(
-                nx.shortest_simple_paths(working_graph, origin_node, destination_node, weight="length"),
-                2
-            ))
-            for path in candidate_paths:
-                for u, v in zip(path, path[1:]):
-                    e_dict = working_graph.get_edge_data(u, v)
-                    if e_dict:
-                        best_k = min(e_dict.keys(), key=lambda k: e_dict[k].get("length", 1.0))
-                        if is_suitable_motor_road(e_dict[best_k]):
-                            target_tomtom_edges.add((u, v, best_k))
-                            if len(target_tomtom_edges) >= 20:
-                                break
-                if len(target_tomtom_edges) >= 20:
-                    break
-        except Exception:
-            pass
+        candidate_paths = get_candidate_simple_paths(
+            working_graph, origin_node, destination_node, max_candidates=2
+        )
+        for path in candidate_paths:
+            for u, v in zip(path, path[1:]):
+                e_dict = working_graph.get_edge_data(u, v)
+                if e_dict:
+                    best_k = min(e_dict.keys(), key=lambda k: e_dict[k].get("length", 1.0))
+                    if is_suitable_motor_road(e_dict[best_k]):
+                        target_tomtom_edges.add((u, v, best_k))
+                        if len(target_tomtom_edges) >= 20:
+                            break
+            if len(target_tomtom_edges) >= 20:
+                break
 
         # 2. Annotate edges with traffic and accessibility costs, querying TomTom only for candidate route edges
         self._apply_traffic_weights(
@@ -787,21 +817,20 @@ class TrafficRouteComparisonService:
 
         # If budget permits, include candidate alternative path edges so alternatives can be traffic-evaluated
         if len(target_tomtom_edges) < 20:
-            try:
-                from itertools import islice
-                for alt_path in islice(nx.shortest_simple_paths(working_graph, origin_node, destination_node, weight="length"), 1, 3):
-                    for u, v in zip(alt_path, alt_path[1:]):
-                        edge_dict = working_graph.get_edge_data(u, v)
-                        if edge_dict:
-                            best_k = min(edge_dict.keys(), key=lambda k: edge_dict[k].get("length", 1.0))
-                            if is_suitable_motor_road(edge_dict[best_k]):
-                                target_tomtom_edges.add((u, v, best_k))
-                                if len(target_tomtom_edges) >= 20:
-                                    break
-                    if len(target_tomtom_edges) >= 20:
-                        break
-            except Exception:
-                pass
+            candidate_paths = get_candidate_simple_paths(
+                working_graph, origin_node, destination_node, max_candidates=3
+            )
+            for alt_path in candidate_paths[1:]:
+                for u, v in zip(alt_path, alt_path[1:]):
+                    edge_dict = working_graph.get_edge_data(u, v)
+                    if edge_dict:
+                        best_k = min(edge_dict.keys(), key=lambda k: edge_dict[k].get("length", 1.0))
+                        if is_suitable_motor_road(edge_dict[best_k]):
+                            target_tomtom_edges.add((u, v, best_k))
+                            if len(target_tomtom_edges) >= 20:
+                                break
+                if len(target_tomtom_edges) >= 20:
+                    break
 
         # 3. Apply traffic and accessibility costs, querying TomTom only for candidate route edges
         traffic_weighting_failed = False
