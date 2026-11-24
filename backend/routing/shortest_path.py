@@ -191,12 +191,16 @@ def nearest_network_node(
     graph: nx.MultiDiGraph,
     coordinate: Coordinate,
     search_radius_meters: float = 100.0,
+    target_component: set[int] | None = None,
 ) -> int:
     """Finds the nearest network node to the given coordinate.
 
     Prefers ground-level pedestrian nodes over inaccessible elevated flyovers
-    within search_radius_meters. Preserves explicitly pedestrian-accessible
-    bridges, footbridges, and mapped pedestrian connections.
+    within search_radius_meters. Also prioritizes nodes belonging to major
+    connected components (or a specified target_component) to avoid snapping
+    onto isolated dead-end campus spurs or disconnected clusters. Preserves
+    explicitly pedestrian-accessible bridges, footbridges, and mapped pedestrian
+    connections.
     """
     if graph.number_of_nodes() == 0:
         raise RouteNetworkUnavailableError("The pedestrian network is empty.")
@@ -222,25 +226,74 @@ def nearest_network_node(
 
     node_distances.sort(key=lambda item: item[0])
 
-    # Check candidates within search_radius_meters for pedestrian preference
-    nearby_preferred: list[tuple[float, int]] = []
-    nearby_connected: list[tuple[float, int]] = []
+    # Analyze connected components to detect major subnetworks
+    undir = graph.to_undirected(as_view=True)
+    components = list(nx.connected_components(undir))
+    largest_size = max((len(c) for c in components), default=0)
+    major_threshold = max(20, int(largest_size * 0.05)) if largest_size >= 20 else 1
+    major_nodes: set[int] = (
+        set().union(*[c for c in components if len(c) >= major_threshold])
+        if components
+        else set()
+    )
+
+    preferred_component_nodes = target_component if target_component is not None else major_nodes
+    extended_radius_meters = max(search_radius_meters, 350.0)
+
+    # Buckets for candidate selection
+    p1_preferred_in_component: list[tuple[float, int]] = []
+    p2_connected_in_component: list[tuple[float, int]] = []
+    p3_preferred_ext_component: list[tuple[float, int]] = []
+    p4_connected_ext_component: list[tuple[float, int]] = []
+    p5_preferred_in_radius: list[tuple[float, int]] = []
+    p6_connected_in_radius: list[tuple[float, int]] = []
 
     for dist, node, _ in node_distances:
-        if dist > search_radius_meters:
+        if graph.degree(node) == 0:
+            continue
+        pref = is_node_pedestrian_preferred(graph, node)
+        in_comp = node in preferred_component_nodes
+
+        if dist <= search_radius_meters:
+            p6_connected_in_radius.append((dist, node))
+            if pref:
+                p5_preferred_in_radius.append((dist, node))
+            if in_comp:
+                p2_connected_in_component.append((dist, node))
+                if pref:
+                    p1_preferred_in_component.append((dist, node))
+
+        if dist <= extended_radius_meters:
+            if in_comp:
+                p4_connected_ext_component.append((dist, node))
+                if pref:
+                    p3_preferred_ext_component.append((dist, node))
+        else:
             break
-        if graph.degree(node) > 0:
-            nearby_connected.append((dist, node))
-            if is_node_pedestrian_preferred(graph, node):
-                nearby_preferred.append((dist, node))
 
-    if nearby_preferred:
-        return nearby_preferred[0][1]
+    if p1_preferred_in_component:
+        return p1_preferred_in_component[0][1]
 
-    if nearby_connected:
-        return nearby_connected[0][1]
+    if p2_connected_in_component:
+        return p2_connected_in_component[0][1]
 
-    # If no connected node within search_radius_meters, find closest connected node in entire graph
+    if p3_preferred_ext_component:
+        return p3_preferred_ext_component[0][1]
+
+    if p4_connected_ext_component:
+        return p4_connected_ext_component[0][1]
+
+    if p5_preferred_in_radius:
+        return p5_preferred_in_radius[0][1]
+
+    if p6_connected_in_radius:
+        return p6_connected_in_radius[0][1]
+
+    # If no candidates matched above, search whole graph for component node, then any connected node
+    for dist, node, _ in node_distances:
+        if graph.degree(node) > 0 and node in preferred_component_nodes:
+            return node
+
     for dist, node, _ in node_distances:
         if graph.degree(node) > 0:
             return node
@@ -334,8 +387,12 @@ class ShortestPathService:
             )
 
         try:
+            undir = graph.to_undirected(as_view=True)
             origin_node = nearest_network_node(graph, origin)
-            destination_node = nearest_network_node(graph, destination)
+            orig_comp = nx.node_connected_component(undir, origin_node)
+            destination_node = nearest_network_node(
+                graph, destination, target_component=orig_comp
+            )
             node_path = nx.shortest_path(
                 graph,
                 source=origin_node,

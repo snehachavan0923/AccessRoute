@@ -103,6 +103,11 @@ class RouteComparisonResponse(BaseModel):
         503: {"description": "Pedestrian network data is unavailable."},
     },
 )
+@router.post(
+    "/shortest/",
+    response_model=ShortestRouteResponse,
+    include_in_schema=False,
+)
 def calculate_shortest_route(request: ShortestRouteRequest) -> ShortestRouteResponse:
     origin = Coordinate(request.origin.latitude, request.origin.longitude)
     destination = Coordinate(
@@ -178,6 +183,11 @@ def _to_candidate_response(candidate) -> RouteCandidateResponse:
         422: {"description": "Invalid coordinates, time index, or area is too large."},
         503: {"description": "Pedestrian network data is unavailable."},
     },
+)
+@router.post(
+    "/compare/",
+    response_model=RouteComparisonResponse,
+    include_in_schema=False,
 )
 def compare_routes(request: CompareRoutesRequest) -> RouteComparisonResponse:
     origin = Coordinate(request.origin.latitude, request.origin.longitude)

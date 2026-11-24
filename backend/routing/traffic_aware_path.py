@@ -410,8 +410,12 @@ class TrafficAwarePathService:
         # Work on a copy to avoid mutating external graph instances
         working_graph = graph.copy()
 
+        undir = working_graph.to_undirected(as_view=True)
         origin_node = nearest_network_node(working_graph, origin)
-        destination_node = nearest_network_node(working_graph, destination)
+        orig_comp = nx.node_connected_component(undir, origin_node)
+        destination_node = nearest_network_node(
+            working_graph, destination, target_component=orig_comp
+        )
 
         # 1. First calculate shortest path on pure physical distance to identify candidate route edges
         target_tomtom_edges: set[tuple[Any, Any, Any]] = set()
@@ -745,8 +749,12 @@ class TrafficRouteComparisonService:
         working_graph = graph.copy()
 
         try:
+            undir = working_graph.to_undirected(as_view=True)
             origin_node = nearest_network_node(working_graph, origin)
-            destination_node = nearest_network_node(working_graph, destination)
+            orig_comp = nx.node_connected_component(undir, origin_node)
+            destination_node = nearest_network_node(
+                working_graph, destination, target_component=orig_comp
+            )
 
             # 1. Pure physical distance shortest path (weight="length") calculated first
             shortest_node_path = nx.shortest_path(
